@@ -1,0 +1,13 @@
+build/
+build-*/
+.west/
+.venv/
+__pycache__/
+*.py[cod]
+*.uf2
+*.bin
+*.elf
+*.hex
+*.map
+.DS_Store
+*:Zone.Identifier

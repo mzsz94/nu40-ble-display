@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+manifest:
+  remotes:
+    - name: zephyrproject
+      url-base: https://github.com/zephyrproject-rtos
+  projects:
+    - name: zephyr
+      remote: zephyrproject
+      revision: e70694102ad6f910485155a824c5483daf605a9f
+      import: true
+  self:
+    path: nu40-ble-display

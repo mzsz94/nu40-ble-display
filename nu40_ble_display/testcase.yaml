@@ -1,0 +1,8 @@
+tests:
+  bluetooth.nu40.oled_receiver:
+    build_only: true
+    platform_allow:
+      - nucode_nu40/nrf52840
+    tags:
+      - bluetooth
+      - display

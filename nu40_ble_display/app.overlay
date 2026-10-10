@@ -1,0 +1,45 @@
+/ {
+	chosen { zephyr,display = &kit_oled; };
+	kit_controls {
+		compatible = "gpio-leds";
+		kit_amp: amp { gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>; };
+	};
+};
+
+&uart0 { status = "disabled"; };
+&uart1 { status = "disabled"; };
+&i2c1 { status = "disabled"; };
+&spi1 { status = "disabled"; };
+&spi3 { status = "disabled"; };
+&pdm0 { status = "disabled"; };
+&i2s0 { status = "disabled"; };
+
+&pinctrl {
+	kit_i2c: kit_i2c {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SCL, 0, 21)>, <NRF_PSEL(TWIM_SDA, 0, 22)>;
+		};
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&kit_i2c>;
+	/delete-property/ pinctrl-1;
+	pinctrl-names = "default";
+	kit_oled: ssd1306@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+		width = <128>;
+		height = <32>;
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <31>;
+		segment-remap;
+		com-invdir;
+		com-sequential;
+		prechargep = <0x22>;
+	};
+};
