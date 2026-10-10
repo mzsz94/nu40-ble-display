@@ -15,7 +15,16 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/reboot.h>
 
+#if defined(CONFIG_BOOTLOADER_MCUBOOT)
+#include <zephyr/app_version.h>
+#include <zephyr/dfu/mcuboot.h>
+#endif
+
 #include "ble_display_protocol.h"
+#include "ble_face.h"
+#include "kit_io.h"
+
+void kit_mgmt_init(void);
 
 static const struct device *const oled = DEVICE_DT_GET(DT_NODELABEL(kit_oled));
 static const struct gpio_dt_spec amp = GPIO_DT_SPEC_GET(DT_NODELABEL(kit_amp), gpios);
@@ -33,7 +42,11 @@ static const struct bt_data scan_response[] = {
 struct received_text {
 	uint32_t session;
 	uint16_t sequence;
-	char text[BLE_DISPLAY_MAX_TEXT + 1];
+	uint8_t type;
+	union {
+		char text[BLE_DISPLAY_MAX_TEXT + 1];
+		struct ble_face face;
+	};
 };
 
 K_MSGQ_DEFINE(messages, sizeof(struct received_text), 2, 4);
@@ -44,6 +57,24 @@ static uint32_t session;
 static atomic_t link_revision;
 static bool oled_ready;
 static uint32_t received_count, oled_writes, ack_count, error_count;
+static struct received_text latest_remote;
+static bool have_remote;
+
+#if defined(CONFIG_BOOTLOADER_MCUBOOT)
+static bool image_confirmed;
+
+static void confirm_working_image(void)
+{
+	/* Accept a trial image only after OLED output and a BLE ACK queue succeed. */
+	if (!image_confirmed && k_uptime_get() >= 5000) {
+		int ret = boot_write_img_confirmed();
+
+		image_confirmed = ret == 0;
+		printk("LINK|OTA version=%s confirm_result=%d confirmed=%u\n",
+		       APP_VERSION_STRING, ret, image_confirmed);
+	}
+}
+#endif
 
 static bool ack_subscribed(struct bt_conn *conn);
 
@@ -65,11 +96,21 @@ static ssize_t receive_text(struct bt_conn *conn, const struct bt_gatt_attr *att
 		return BT_GATT_ERR(BT_ATT_ERR_CCC_IMPROPER_CONF);
 	}
 	k_mutex_lock(&link_lock, K_FOREVER);
-	result = ble_display_receive(&receiver, buffer, length, k_uptime_get_32());
+	if (length >= 2 && ((const uint8_t *)buffer)[1] == BLE_DISPLAY_FACE) {
+		ble_display_rx_reset(&receiver);
+		message.type = BLE_DISPLAY_FACE;
+		result = ble_face_parse(buffer, length, &message.sequence, &message.face) ?
+			 BLE_DISPLAY_COMPLETE : BLE_DISPLAY_INVALID;
+	} else {
+		message.type = BLE_DISPLAY_TEXT;
+		result = ble_display_receive(&receiver, buffer, length, k_uptime_get_32());
+		if (result == BLE_DISPLAY_COMPLETE) {
+			message.sequence = receiver.sequence;
+			memcpy(message.text, receiver.text, sizeof(message.text));
+		}
+	}
 	if (result == BLE_DISPLAY_COMPLETE) {
 		message.session = session;
-		message.sequence = receiver.sequence;
-		memcpy(message.text, receiver.text, sizeof(message.text));
 		queued = k_msgq_put(&messages, &message, K_NO_WAIT);
 	}
 	k_mutex_unlock(&link_lock);
@@ -123,6 +164,55 @@ static int draw_text(const char *text)
 		oled_writes++;
 	}
 	return ret;
+}
+
+static int draw_face(const struct ble_face *face)
+{
+	uint8_t pixels[BLE_FACE_BUFFER_SIZE];
+	int ret;
+
+	if (!oled_ready) {
+		return -ENODEV;
+	}
+	if (!ble_face_render(face, pixels)) {
+		return -EINVAL;
+	}
+	ret = cfb_framebuffer_clear(oled, false);
+	for (int y = 0; y < (int)BLE_FACE_HEIGHT && ret == 0; y++) {
+		for (int x = 0; x < (int)BLE_FACE_WIDTH && ret == 0; x++) {
+			if (pixels[(y / 8) * BLE_FACE_WIDTH + x] & (1U << (y % 8))) {
+				struct cfb_position point = {.x = x, .y = y};
+
+				ret = cfb_draw_point(oled, &point);
+			}
+		}
+	}
+	if (ret == 0) {
+		ret = cfb_framebuffer_finalize(oled);
+	}
+	if (ret == 0) {
+		oled_writes++;
+	}
+	return ret;
+}
+
+static int draw_current(void)
+{
+	struct kit_status s;
+	char text[BLE_DISPLAY_MAX_TEXT + 1];
+
+	kit_snapshot(&s);
+	if (s.page != 0) {
+		kit_local_screen(text);
+		return draw_text(text);
+	}
+	if (have_remote) {
+		return latest_remote.type == BLE_DISPLAY_FACE ? draw_face(&latest_remote.face) :
+		       draw_text(latest_remote.text);
+	}
+	struct ble_face face = ble_face_demo(k_uptime_get_32());
+
+	return draw_face(&face);
 }
 
 static void connected(struct bt_conn *conn, uint8_t error)
@@ -192,7 +282,9 @@ static void process_message(const struct received_text *message)
 	if (conn == NULL) {
 		return;
 	}
-	rendered = draw_text(message->text);
+	latest_remote = *message;
+	have_remote = true;
+	rendered = draw_current();
 	status = rendered == 0 ? BLE_DISPLAY_OK :
 		 rendered == -E2BIG ? BLE_DISPLAY_BAD_TEXT : BLE_DISPLAY_OLED_ERROR;
 	ble_display_build_ack(message->sequence, status, ack);
@@ -201,12 +293,20 @@ static void process_message(const struct received_text *message)
 	received_count++;
 	if (rendered == 0 && notified == 0) {
 		ack_count++;
+#if defined(CONFIG_BOOTLOADER_MCUBOOT)
+		confirm_working_image();
+#endif
 	} else {
 		error_count++;
 	}
 	/* oled_result confirms the driver transfer; visible text needs observation. */
 	printk("LINK|RX seq=%u bytes=%u oled_result=%d ack_result=%d visible=unverified\n",
-	       message->sequence, (unsigned int)strlen(message->text), rendered, notified);
+	       message->sequence, message->type == BLE_DISPLAY_FACE ? BLE_FACE_FRAME_SIZE :
+	       (unsigned int)strlen(message->text), rendered, notified);
+	if (message->type == BLE_DISPLAY_FACE) {
+		printk("LINK|FACE seq=%u expression=%u openness=%u oled_result=%d\n",
+		       message->sequence, message->face.expression, message->face.openness, rendered);
+	}
 }
 
 static void report_status(void)
@@ -219,6 +319,7 @@ static void report_status(void)
 	printk("LINK|STATUS role=display connected=%u oled_ready=%u rx=%u oled_writes=%u "
 	       "ack_queued=%u errors=%u\n", connected_now, oled_ready, received_count,
 	       oled_writes, ack_count, error_count);
+	kit_report();
 }
 
 static void enter_bootloader(void)
@@ -248,8 +349,22 @@ static void poll_console(const struct device *console)
 				enter_bootloader();
 			} else if (!overflow && strcmp(command, "status") == 0) {
 				report_status();
+			} else if (!overflow && strcmp(command, "beep") == 0) {
+				(void)kit_request(KIT_BEEP, 0);
+			} else if (!overflow && strcmp(command, "record") == 0) {
+				(void)kit_request(KIT_RECORD, 0);
+			} else if (!overflow && strcmp(command, "play") == 0) {
+				(void)kit_request(KIT_PLAY, 0);
+			} else if (!overflow && strcmp(command, "sd") == 0) {
+				(void)kit_request(KIT_SD_RETRY, 0);
+			} else if (!overflow && strcmp(command, "mic") == 0) {
+				(void)kit_request(KIT_PAGE, 1);
+			} else if (!overflow && strcmp(command, "face") == 0) {
+				(void)kit_request(KIT_PAGE, 0);
+			} else if (!overflow && strcmp(command, "rgb") == 0) {
+				(void)kit_request(KIT_RGB, UINT32_MAX);
 			} else if (used || overflow) {
-				printk("LINK|CMD supported=status,uf2\n");
+				printk("LINK|CMD supported=status,beep,record,play,sd,mic,face,rgb,uf2\n");
 			}
 			used = 0;
 			overflow = false;
@@ -266,7 +381,8 @@ int main(void)
 	const struct device *console = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 	struct received_text message;
 	atomic_val_t seen_revision = -1;
-	int64_t report_at = 0;
+	int64_t report_at = 0, screen_at = 0;
+	uint8_t previous_page = UINT8_MAX;
 	int ret;
 
 	(void)gpio_pin_configure_dt(&amp, GPIO_OUTPUT_INACTIVE);
@@ -278,7 +394,18 @@ int main(void)
 		ret = display_blanking_off(oled);
 	}
 	oled_ready = ret == 0;
-	printk("LINK|BOOT role=display firmware=1 oled_init=%d protocol=1\n", ret);
+	kit_init();
+	kit_mgmt_init();
+#if defined(CONFIG_BOOTLOADER_MCUBOOT)
+	image_confirmed = boot_is_img_confirmed();
+	printk("LINK|BOOT role=display firmware=3 oled_init=%d protocol=1 "
+	       "features=text,face,ota,kit version=%s\n", ret, APP_VERSION_STRING);
+	printk("LINK|OTA version=%s confirmed=%u transport=smp_ble\n",
+	       APP_VERSION_STRING, image_confirmed);
+#else
+	printk("LINK|BOOT role=display firmware=2 oled_init=%d protocol=1 features=text,face,kit\n",
+	       ret);
+#endif
 	(void)draw_text("NU40 BLE DISPLAY\nWaiting for NU87\nNo data received");
 	ret = bt_enable(NULL);
 	printk("LINK|BLE enable_result=%d\n", ret);
@@ -296,6 +423,10 @@ int main(void)
 			k_mutex_lock(&link_lock, K_FOREVER);
 			connected_now = peer != NULL;
 			k_mutex_unlock(&link_lock);
+			kit_set_link(connected_now);
+			if (!connected_now) {
+				have_remote = false;
+			}
 			if (ret == 0) {
 				(void)draw_text(connected_now ?
 					"BLE CONNECTED\nWaiting for NU87 data" :
@@ -307,6 +438,16 @@ int main(void)
 			process_message(&message);
 		}
 		poll_console(console);
+		kit_poll();
+		struct kit_status kit;
+
+		kit_snapshot(&kit);
+		if (kit.page != previous_page ||
+		    (k_uptime_get() >= screen_at && (kit.page != 0 || !have_remote))) {
+			(void)draw_current();
+			previous_page = kit.page;
+			screen_at = k_uptime_get() + 120;
+		}
 		if (k_uptime_get() >= report_at) {
 			report_status();
 			report_at = k_uptime_get() + 2000;

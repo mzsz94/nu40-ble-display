@@ -1,0 +1,12 @@
+tests:
+  nucode.kit.selftest.build:
+    build_only: true
+    platform_allow:
+      - nucode_nu40/nrf52840
+    integration_platforms:
+      - nucode_nu40/nrf52840
+    tags:
+      - gpio
+      - display
+      - audio
+      - disk

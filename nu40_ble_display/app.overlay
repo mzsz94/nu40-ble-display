@@ -1,23 +1,53 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+#include <zephyr/dt-bindings/led/led.h>
+
 / {
-	chosen { zephyr,display = &kit_oled; };
+	chosen {
+		zephyr,display = &kit_oled;
+	};
+	kit_keys {
+		compatible = "gpio-keys";
+		kit_key0: key_0 { gpios = <&gpio0 31 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>; };
+		kit_key1: key_1 { gpios = <&gpio1 7 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>; };
+		kit_key2: key_2 { gpios = <&gpio1 6 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>; };
+		kit_key3: key_3 { gpios = <&gpio1 5 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>; };
+	};
 	kit_controls {
 		compatible = "gpio-leds";
+		kit_mic_sel: mic_sel { gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>; };
 		kit_amp: amp { gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>; };
 	};
 };
 
+/* UART0 RTS/CTS overlap the microphone; SPI1 is remapped below for the SD card. */
 &uart0 { status = "disabled"; };
 &uart1 { status = "disabled"; };
 &i2c1 { status = "disabled"; };
-&spi1 { status = "disabled"; };
-&spi3 { status = "disabled"; };
-&pdm0 { status = "disabled"; };
-&i2s0 { status = "disabled"; };
 
 &pinctrl {
 	kit_i2c: kit_i2c {
 		group1 {
 			psels = <NRF_PSEL(TWIM_SCL, 0, 21)>, <NRF_PSEL(TWIM_SDA, 0, 22)>;
+		};
+	};
+	kit_pdm: kit_pdm {
+		group1 {
+			psels = <NRF_PSEL(PDM_CLK, 0, 5)>, <NRF_PSEL(PDM_DIN, 0, 7)>;
+		};
+	};
+	kit_i2s: kit_i2s {
+		group1 {
+			psels = <NRF_PSEL(I2S_SCK_M, 1, 9)>,
+				<NRF_PSEL(I2S_LRCK_M, 1, 8)>, <NRF_PSEL(I2S_SDOUT, 0, 19)>;
+		};
+	};
+	kit_rgb: kit_rgb {
+		group1 { psels = <NRF_PSEL(SPIM_MOSI, 0, 20)>; };
+	};
+	kit_sd: kit_sd {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 0, 27)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 26)>, <NRF_PSEL(SPIM_MISO, 0, 4)>;
 		};
 	};
 };
@@ -41,5 +71,55 @@
 		com-invdir;
 		com-sequential;
 		prechargep = <0x22>;
+	};
+};
+
+&pdm0 {
+	status = "okay";
+	pinctrl-0 = <&kit_pdm>;
+	pinctrl-names = "default";
+	clock-source = "PCLK32M_HFXO";
+	queue-size = <8>;
+};
+
+&i2s0 {
+	status = "okay";
+	pinctrl-0 = <&kit_i2s>;
+	pinctrl-names = "default";
+};
+
+&spi1 {
+	status = "okay";
+	pinctrl-0 = <&kit_sd>;
+	/delete-property/ pinctrl-1;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio0 23 GPIO_ACTIVE_LOW>;
+	kit_sdhc: sdhc@0 {
+		compatible = "zephyr,sdhc-spi-slot";
+		reg = <0>;
+		spi-max-frequency = <4000000>;
+		/* The designer's KIT example reports HIGH as card present, with no pull. */
+		cd-gpios = <&gpio1 15 GPIO_ACTIVE_HIGH>;
+		mmc {
+			compatible = "zephyr,sdmmc-disk";
+			disk-name = "KITSD";
+		};
+	};
+};
+
+&spi3 {
+	status = "okay";
+	pinctrl-0 = <&kit_rgb>;
+	/delete-property/ pinctrl-1;
+	/delete-property/ cs-gpios;
+	pinctrl-names = "default";
+	kit_strip: ws2812@0 {
+		compatible = "worldsemi,ws2812-spi";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+		chain-length = <4>;
+		color-mapping = <LED_COLOR_ID_GREEN LED_COLOR_ID_RED LED_COLOR_ID_BLUE>;
+		spi-one-frame = <0xfc>;
+		spi-zero-frame = <0xc0>;
 	};
 };

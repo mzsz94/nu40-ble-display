@@ -11,3 +11,8 @@ __pycache__/
 *.map
 .DS_Store
 *:Zone.Identifier
+
+# Local signing credentials
+*.pem
+*.key
+.ruff_cache/
