@@ -74,8 +74,9 @@ new recordings. A fresh explicit start is required afterward.
 ## Build, provisioning, and subsequent OTA
 
 The build needs an existing Zephyr west workspace, MCUboot, Zephyr SDK, and a
-Python environment with west, cryptography and intelhex. This project's local
-validation used Zephyr `e70694102ad6`, SDK 1.0.1 and Python 3.12.
+Python environment with west, cryptography and intelhex. The 0.2.0 NU40 graphics
+build used Zephyr `8dafb9a897da`, SDK 1.0.1 and Python 3.12. Earlier validation
+used `e70694102ad6`; the NU87 gateway still uses its separate, pinned workspace.
 
 ```bash
 python firmware/nu40_voice/build.py \
@@ -125,9 +126,15 @@ python3 -m unittest discover -s firmware/voice_common/tests -v
 The host test runs IMA reference vectors, saturation/length/control validation,
 waveform roundtrips and BTN4 bounce/hold/clock-wrap cases under ASan/UBSan.
 The build compiles MCUboot and the app and runs `imgtool verify` on the update.
-No physical board has been flashed by this implementation task. Verify PDM
-waveform quality, BLE throughput with Wi-Fi active, OLED rendering, audible
-BTN4 warning and complete OTA test/confirm/revert on the actual hardware.
+The 2026-10-11 graphics bench installed the confirmed 0.2.0 factory image over
+USB, observed its WG1 boot record and read the active, confirmed image hash
+through the authenticated NU87 BLE SMP relay. The operator confirmed that the
+OLED face responds to the real IMU. Face/horizon/text commands returned matching
+OLED-driver ACKs. See the [bench record](../../docs/military-oled.md).
+
+This upgrade did not repeat PDM waveform-quality, sustained voice throughput,
+audible BTN4 warning or complete OTA upload/test/confirm/revert tests. SMP image
+listing alone does not verify a full wireless firmware replacement.
 
 ## WG1 OLED graphics
 
