@@ -75,6 +75,7 @@ static atomic_t link_revision;
 static bool oled_ready;
 static uint32_t received_count, oled_writes, ack_count, error_count;
 static struct wallaby_scene scene = {.view = 'F', .state = 'X'};
+static struct wallaby_scene_motion scene_motion;
 static bool scene_active;
 static uint32_t scene_received_at;
 static char display_text[BLE_DISPLAY_MAX_TEXT + 1];
@@ -90,11 +91,13 @@ static int draw_scene(void)
 	char labels[4][WALLABY_LABEL_COLUMNS + 1];
 	uint32_t now = k_uptime_get_32();
 	int ret;
+	struct wallaby_scene presented = scene_motion.initialized ?
+		wallaby_motion_read(&scene_motion, now) : scene;
 
 	if (!oled_ready) {
 		return -ENODEV;
 	}
-	if (!wallaby_display_render(&scene,
+	if (!wallaby_display_render(&presented,
 				 (uint32_t)(now - scene_received_at) > WALLABY_SCENE_TIMEOUT_MS,
 				 now, alarm_is_active(), displayed_voice,
 				 now - voice_received_at, pixels, labels)) {
@@ -320,6 +323,7 @@ static void process_message(const struct received_text *message)
 			scene_received_at = k_uptime_get_32();
 		}
 		scene = next;
+		wallaby_motion_target(&scene_motion, &next, k_uptime_get_32());
 		scene_active = true;
 		scene_after_text = true;
 		rendered = draw_display();
@@ -436,6 +440,7 @@ int main(void)
 			bool connected_now;
 
 			scene_active = false;
+			scene_motion.initialized = false;
 			text_hold = false;
 
 			k_spinlock_key_t key = k_spin_lock(&link_lock);
@@ -468,7 +473,7 @@ int main(void)
 				error_count++;
 			}
 			previous_alarm = alarm_now;
-			scene_at = k_uptime_get() + 120;
+			scene_at = k_uptime_get() + 60;
 		}
 		if (k_uptime_get() >= report_at) {
 			report_status();

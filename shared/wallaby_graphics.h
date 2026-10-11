@@ -10,6 +10,7 @@
 #define WALLABY_PIXELS 512U
 #define WALLABY_LABEL_COLUMNS 10U
 #define WALLABY_SCENE_TIMEOUT_MS 3000U
+#define WALLABY_BLEND_MS 160U
 
 /* ASCII carried by the existing acknowledged TEXT characteristic, not a video
  * stream. R/P/T are whole degrees from real gravity measurements. P/S describe
@@ -17,7 +18,7 @@
  */
 struct wallaby_scene {
 	char view;                 /* F: face, H: horizon */
-	char state;                /* L/R/C/P/S/A/B/X: live/reference/calibrate/patrol/stop/tilt/alarm/stale */
+	char state;                /* L/R/C/P/S/A/B/X/U: U means fresh but unsettled gravity */
 	int16_t roll, pitch;
 	uint16_t tilt;
 	uint32_t sample;
@@ -26,10 +27,63 @@ struct wallaby_scene {
 static inline bool wallaby_scene_valid(const struct wallaby_scene *s)
 {
 	return s && (s->view == 'F' || s->view == 'H') &&
-	       s->state && strchr("LRCPSABX", s->state) &&
+	       s->state && strchr("LRCPSABXU", s->state) &&
 	       s->roll >= -180 && s->roll <= 180 &&
 	       s->pitch >= -90 && s->pitch <= 90 && s->tilt <= 180 &&
 	       (s->sample != 0 || s->state == 'X' || s->state == 'B');
+}
+
+struct wallaby_scene_motion {
+	bool initialized;
+	struct wallaby_scene from, target;
+	uint32_t started_at;
+};
+
+static inline int wallaby_roll_wrap(int roll)
+{
+	return ((roll + 540) % 360) - 180;
+}
+
+static inline bool wallaby_scene_can_blend(char state)
+{
+	return state && strchr("LRCPS", state);
+}
+
+/* Cosmetic interpolation between accepted measurements, with no prediction or
+ * sample-clock updates. Alarms, unavailable attitude and stale input snap at
+ * once. The caller still expires the actual measurement after 3000 ms.
+ */
+static inline struct wallaby_scene wallaby_motion_read(const struct wallaby_scene_motion *m,
+						      uint32_t now)
+{
+	struct wallaby_scene view = m->target;
+	uint32_t elapsed = now - m->started_at;
+
+	if (elapsed >= WALLABY_BLEND_MS || !wallaby_scene_can_blend(view.state)) {
+		return view;
+	}
+	int delta = wallaby_roll_wrap(view.roll - m->from.roll);
+
+	view.roll = wallaby_roll_wrap(m->from.roll + delta * (int)elapsed / (int)WALLABY_BLEND_MS);
+	view.pitch = m->from.pitch + (view.pitch - m->from.pitch) * (int)elapsed /
+		     (int)WALLABY_BLEND_MS;
+	view.tilt = m->from.tilt + ((int)view.tilt - m->from.tilt) * (int)elapsed /
+		    (int)WALLABY_BLEND_MS;
+	return view;
+}
+
+static inline void wallaby_motion_target(struct wallaby_scene_motion *m,
+					const struct wallaby_scene *target, uint32_t now)
+{
+	bool blend = m->initialized && m->target.view == target->view &&
+		     wallaby_scene_can_blend(m->target.state) &&
+		     wallaby_scene_can_blend(target->state);
+	struct wallaby_scene from = blend ? wallaby_motion_read(m, now) : *target;
+
+	m->from = from;
+	m->target = *target;
+	m->started_at = now;
+	m->initialized = true;
 }
 
 static inline bool wallaby_number(const char **cursor, bool sign, uint32_t maximum,
@@ -180,6 +234,7 @@ static inline const char *wallaby_state_label(char state)
 	case 'A': return "TILT STOP";
 	case 'B': return "SIM ALERT";
 	case 'X': return "LINK STALE";
+	case 'U': return "ATT MOVING";
 	default: return "LIVE IMU";
 	}
 }
@@ -210,6 +265,17 @@ static inline bool wallaby_scene_render(const struct wallaby_scene *s, bool expi
 		strcpy(labels[3], "CHECK LINK");
 		return true;
 	}
+	if (state == 'U') {
+		wallaby_rect(pixels, 13, 7, 38, 20, false);
+		wallaby_line(pixels, 18, 17, 26, 11);
+		wallaby_line(pixels, 26, 11, 37, 23);
+		wallaby_line(pixels, 37, 23, 46, 17);
+		strcpy(labels[1], "NO GRAVITY");
+		strcpy(labels[2], "HOLD STILL");
+		snprintf(labels[3], WALLABY_LABEL_COLUMNS + 1, "#%lu",
+			 (unsigned long)(s->sample % 1000000000U));
+		return true;
+	}
 	if (state == 'A' || state == 'B') {
 		wallaby_line(pixels, 32, 1, 3, 30);
 		wallaby_line(pixels, 32, 1, 61, 30);
@@ -228,7 +294,7 @@ static inline bool wallaby_scene_render(const struct wallaby_scene *s, bool expi
 		wallaby_rect(pixels, 31, 14, 3, 5, false);
 	} else {
 		bool blink = now % 3600U < 140U && state != 'C';
-		int gaze_x = wallaby_clip(s->roll / 8, -5, 5);
+		int gaze_x = wallaby_clip(wallaby_sin(s->roll) * 5 / 643, -5, 5);
 		int gaze_y = wallaby_clip(-s->pitch / 12, -2, 2);
 
 		wallaby_rect(pixels, 7, 4, 50, 26, false);

@@ -107,3 +107,18 @@ The [latest GIF, MP4 and evidence](https://github.com/mzsz94/micro-wallaby/blob/
 show a 24.92-second actual browser check after the confirmed reset: real IMU
 input, face/horizon/text ACKs, virtual patrol, W-key driving and Space stopping.
 The IMU stayed on the desk, and the OLED preview is host-rendered.
+
+## 응답 개선 소스 0.2.3
+
+0.2.3은 실측 자세 사이의 160ms 화면 보간과 60ms 로컬 렌더링을 추가한다.
+±180°는 짧은 회전 경로를 사용하고 얼굴 눈동자는 sin(roll)로 연결된다.
+새 값은 있지만 중력이 불안정한 상태는 `ATT MOVING`, 실제 만료는
+`LINK STALE`이다. 경보와 만료는 즉시 적용하며 기존 3초 만료를 늘리지 않는다.
+HostPC의 그래픽 전송 최소 간격은 1.2초에서 0.3초로 줄었다. 이는 설정값이며
+실제 무선 응답 시간은 별도로 측정한다.
+
+직전 0.2.2 + NU87 edc5094 검사에서는 실제 4초 supervision 협상 후
+301.96초 동안 BLE 단절·OLED 오류가 없었다. 그러나 Host 입력 지연으로
+16/1500개 관측이 기존 1.5초 freshness 기준을 넘었고, 사용자는 180° 부근
+STALE과 지연을 보고했다. 따라서 연결 유지와 자세 유효성을 구분한다.
+0.2.3 설치 결과는 검증 후 이 문서에 추가한다.

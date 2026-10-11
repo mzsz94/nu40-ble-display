@@ -16,7 +16,8 @@ static inline bool wallaby_text_holding(bool requested, uint32_t received_at, ui
 
 static inline bool wallaby_scene_priority(const struct wallaby_scene *scene, bool expired)
 {
-	return expired || scene->state == 'X' || scene->state == 'A' || scene->state == 'B';
+	return expired || scene->state == 'X' || scene->state == 'U' ||
+	       scene->state == 'A' || scene->state == 'B';
 }
 
 /* The host intentionally pauses ordinary WG1 sends during its 8-second answer

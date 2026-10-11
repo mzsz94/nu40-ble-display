@@ -60,7 +60,7 @@ static void voice_composition(void)
 	assert(strcmp(wallaby_voice_label(VOICE_ERROR, 7999), "MIC ERROR") == 0);
 
 	/* No voice state replaces any pixel or label of warning/stale scenes. */
-	for (const char *warning = "XAB"; *warning; warning++) {
+	for (const char *warning = "XUAB"; *warning; warning++) {
 		scene.state = *warning;
 		for (unsigned expired = 0; expired < 2; expired++) {
 			assert(wallaby_scene_render(&scene, expired, 500, baseline, original));
@@ -127,7 +127,7 @@ static void render_bounds(void)
 		}
 	}
 	s.view = 'F';
-	for (const char *p = "LRCPSABX"; *p; p++) {
+	for (const char *p = "LRCPSABXU"; *p; p++) {
 		s.state = *p;
 		assert(wallaby_scene_render(&s, false, 500, guarded.pixels, labels));
 		assert(strcmp(labels[0], wallaby_state_label(*p)) == 0);
@@ -152,6 +152,64 @@ static void render_bounds(void)
 			assert(open[i * 128 + x] == 0);
 		}
 	}
+}
+
+static void presentation_motion(void)
+{
+	struct wallaby_scene_motion motion = {0};
+	struct wallaby_scene target = {.view = 'H', .state = 'L', .sample = 1, .roll = 179};
+	struct wallaby_scene view;
+	uint8_t pixels[WALLABY_PIXELS];
+	char labels[4][WALLABY_LABEL_COLUMNS + 1];
+
+	wallaby_motion_target(&motion, &target, 100);
+	assert(wallaby_motion_read(&motion, 100).roll == 179);
+	target.roll = -179; target.sample = 2;
+	wallaby_motion_target(&motion, &target, 200);
+	view = wallaby_motion_read(&motion, 280);
+	assert(abs(view.roll) == 180 && view.sample == 2);
+	assert(wallaby_motion_read(&motion, 360).roll == -179);
+	/* Retarget from the displayed posture, not an obsolete queued trajectory. */
+	target.roll = -139; target.sample = 3;
+	wallaby_motion_target(&motion, &target, 400);
+	view = wallaby_motion_read(&motion, 480);
+	assert(view.roll == -159);
+	target.roll = -119; target.sample = 4;
+	wallaby_motion_target(&motion, &target, 480);
+	assert(wallaby_motion_read(&motion, 480).roll == -159);
+	assert(wallaby_motion_read(&motion, 640).roll == -119);
+	target.roll = -159; target.pitch = -40; target.tilt = 40; target.sample = 5;
+	wallaby_motion_target(&motion, &target, 700);
+	view = wallaby_motion_read(&motion, 780);
+	assert(view.roll == -139 && view.pitch == -20 && view.tilt == 20);
+	/* Clock wrap is bounded, and presentation never renews a sample. */
+	target.roll = 0; target.sample = 6;
+	wallaby_motion_target(&motion, &target, UINT32_MAX - 79U);
+	assert(wallaby_motion_read(&motion, 80).roll == 0);
+	assert(wallaby_motion_read(&motion, 9000).sample == 6);
+	for (const char *state = "XUAB"; *state; state++) {
+		target.state = *state; target.roll = 0;
+		wallaby_motion_target(&motion, &target, 10000);
+		view = wallaby_motion_read(&motion, 10000);
+		assert(view.state == *state && view.roll == 0);
+		assert(wallaby_scene_render(&view, false, 10000, pixels, labels));
+		assert(strcmp(labels[0], wallaby_state_label(*state)) == 0);
+	}
+	/* Fresh but unusable gravity is not described as a link failure. */
+	target.state = 'U';
+	assert(wallaby_scene_render(&target, false, 500, pixels, labels));
+	assert(strcmp(labels[0], "ATT MOVING") == 0);
+	assert(strcmp(labels[2], "HOLD STILL") == 0);
+	assert(wallaby_scene_render(&target, true, 4000, pixels, labels));
+	assert(strcmp(labels[0], "LINK STALE") == 0);
+	/* Face gaze remains continuous across +/-180 rather than jumping sides. */
+	target.state = 'L'; target.view = 'F'; target.roll = 179;
+	uint8_t inverted[WALLABY_PIXELS];
+
+	assert(wallaby_scene_render(&target, false, 500, inverted, labels));
+	target.roll = -179;
+	assert(wallaby_scene_render(&target, false, 500, pixels, labels));
+	assert(memcmp(pixels, inverted, sizeof(pixels)) == 0);
 }
 
 int main(void)
@@ -196,6 +254,7 @@ int main(void)
 	render_bounds();
 	voice_composition();
 	text_voice_composition();
+	presentation_motion();
 	puts("PASS WG1 strict parsing, bounds, warning/stale priority and cosmetic blink");
 	return 0;
 }

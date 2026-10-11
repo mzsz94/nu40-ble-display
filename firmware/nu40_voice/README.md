@@ -255,4 +255,24 @@ transfer, not that a cached scene hidden by an answer hold was immediately shown
 See the dashboard usage in
 [OLED-GRAPHICS.md](https://github.com/mzsz94/micro-wallaby/blob/feat/military-wallaby-oled-graphics/docs/demo/OLED-GRAPHICS.md).
 The host preview is not a camera feed; driver ACK and physical visibility remain
-separate observations. The current source and confirmed bench version is 0.2.2.
+separate observations. The last confirmed bench version in this section is 0.2.2; current source is 0.2.3.
+
+### Responsive graphics (0.2.3)
+
+WG1 adds `U` (`ATT MOVING`) for fresh samples whose acceleration cannot support
+a gravity-only attitude estimate. `X` (`LINK STALE`) continues to mean expired
+input. Neither supplies invented angles or enables virtual motion.
+
+The display blends accepted measured poses over 160 ms, using the shortest roll
+path through ±180°, and refreshes its local raster every 60 ms. Face gaze follows
+sine of roll, avoiding a side-to-side jump at inversion. Alerts, unavailable
+attitude and stale state take effect immediately. Cosmetic interpolation never
+renews the sample timer; unchanged sample numbers still expire after 3 seconds.
+
+The accompanying HostPC app sends only new graphics samples at a 300 ms minimum
+interval instead of 1.2 s, and uses a quicker adaptive presentation filter. These
+are scheduling limits, not a guaranteed radio frame rate or end-to-end latency.
+Raw I2C evidence, gravity validity, tilt thresholds and freshness limits are
+unchanged. Native parser/raster/interpolation tests include inversion in both
+directions, clock wrap, retargeting and warning priority. Hardware installation
+and measured cadence are documented in the owning repository's demo guide.
