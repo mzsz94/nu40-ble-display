@@ -24,47 +24,35 @@ static struct {
  struct recording_transport transport;
  bool subscribed, ready, ota, alarm;
  uint32_t display_revision;
+ enum voice_status display_status;
  char display[85];
 } state;
 static struct recording clip; /* Owned exclusively by capture_thread. */
 struct audio_packet { uint8_t bytes[VOICE_FRAME_SIZE]; uint32_t generation; };
 K_MSGQ_DEFINE(audio_queue, sizeof(struct audio_packet), 8, 4);
 
-static void display_locked(const char *text) {
+static void display_locked(enum voice_status status,const char *text) {
+ state.display_status=status;
  strncpy(state.display,text,sizeof(state.display)-1);
  state.display[sizeof(state.display)-1]=0;state.display_revision++;
 }
-static void display_status(const char *text) {
- k_spinlock_key_t key=k_spin_lock(&state_lock);display_locked(text);k_spin_unlock(&state_lock,key);
+static void display_status(enum voice_status status,const char *text) {
+ k_spinlock_key_t key=k_spin_lock(&state_lock);display_locked(status,text);k_spin_unlock(&state_lock,key);
 }
-bool voice_display_status(uint32_t *revision,char *text,size_t capacity) {
- if(!revision||!text||!capacity)return false;
+bool voice_display_status(uint32_t *revision,enum voice_status *status,char *text,size_t capacity) {
+ if(!revision||!status||!text||!capacity)return false;
  k_spinlock_key_t key=k_spin_lock(&state_lock);
  bool changed=*revision!=state.display_revision;
- if(changed){strncpy(text,state.display,capacity-1);text[capacity-1]=0;*revision=state.display_revision;}
+ if(changed){strncpy(text,state.display,capacity-1);text[capacity-1]=0;*revision=state.display_revision;*status=state.display_status;}
  k_spin_unlock(&state_lock,key);return changed;
-}
-bool voice_display_override(char *text, size_t capacity)
-{
-	if (text == NULL || capacity == 0) { return false; }
-	k_spinlock_key_t key = k_spin_lock(&state_lock);
-	bool active = state.transport.armed && state.peer && state.subscribed &&
-		state.ready && !state.ota && !state.alarm;
-
-	if (active) {
-		strncpy(text, state.display, capacity - 1);
-		text[capacity - 1] = '\0';
-	}
-	k_spin_unlock(&state_lock, key);
-	return active;
 }
 static void cancel_locked(const char *message) {
  (void)recording_stop(&state.transport,state.transport.session);
- display_locked(message);
+ display_locked(VOICE_OFF,message);
 }
 static void fail_session(uint32_t generation,const char *message) {
  k_spinlock_key_t key=k_spin_lock(&state_lock);
- if(state.transport.generation==generation)cancel_locked(message);
+ if(state.transport.generation==generation){cancel_locked(message);state.display_status=VOICE_ERROR;}
  k_spin_unlock(&state_lock,key);k_sem_give(&voice_wake);
 }
 void voice_ota_pause(bool pause) {
@@ -73,14 +61,21 @@ void voice_ota_pause(bool pause) {
  k_spin_unlock(&state_lock,key);k_sem_give(&voice_wake);
 }
 void voice_alarm_pause(bool pause) {
- k_spinlock_key_t key=k_spin_lock(&state_lock);state.alarm=pause;
+ k_spinlock_key_t key=k_spin_lock(&state_lock);bool was_active=state.alarm;state.alarm=pause;
  if(pause)cancel_locked("ALERT - MIC OFF\nRecording discarded");
+ else if(was_active&&!state.ota)display_locked(VOICE_OFF,"MIC OFF\nAlarm cleared\nArm in HostPC");
  k_spin_unlock(&state_lock,key);k_sem_give(&voice_wake);
 }
 static bool current_session(uint32_t session,uint32_t generation) {
  k_spinlock_key_t key=k_spin_lock(&state_lock);
  bool current=recording_session_matches(&state.transport,session,generation)&&state.peer&&state.subscribed&&!state.alarm&&!state.ota;
  k_spin_unlock(&state_lock,key);return current;
+}
+static void display_session_status(uint32_t session,uint32_t generation,
+                                   enum voice_status status,const char *text) {
+ k_spinlock_key_t key=k_spin_lock(&state_lock);
+ if(recording_session_matches(&state.transport,session,generation))display_locked(status,text);
+ k_spin_unlock(&state_lock,key);
 }
 /* System-workqueue notification allocation is nonblocking. A failed frame
  * cancels the session: the host must never silently bridge a missing packet. */
@@ -121,7 +116,7 @@ static void mtu_done(struct bt_conn *conn,uint8_t error,struct bt_gatt_exchange_
 static struct bt_gatt_exchange_params mtu_params={.func=mtu_done};
 void voice_init(const struct bt_gatt_attr *audio_attr) {
  state.audio_attr=audio_attr;state.ready=device_is_ready(microphone);
- display_status("MIC OFF\nArm in HostPC\nBTN2 REC / BTN3 SEND");
+ display_status(VOICE_OFF,"MIC OFF\nArm in HostPC\nBTN2 REC / BTN3 SEND");
  printk("VOICE|BOOT ready=%u source=NU40_PDM rate=16000 frame=176 buttons=2,3\n",state.ready);
  k_sem_give(&voice_ready);
 }
@@ -152,9 +147,9 @@ ssize_t voice_control(struct bt_conn *conn,const struct bt_gatt_attr *attr,const
  if(state.peer!=conn)error=BT_ATT_ERR_UNLIKELY;
  else if(start&&(!state.ready||state.ota||state.alarm))error=BT_ATT_ERR_UNLIKELY;
  else if(start&&!state.subscribed)error=BT_ATT_ERR_CCC_IMPROPER_CONF;
- else if(start){recording_arm(&state.transport,session);display_locked("MIC READY\nBTN2: RECORD\nBTN3: SEND");}
+ else if(start){recording_arm(&state.transport,session);display_locked(VOICE_ARMED,"MIC READY\nBTN2: RECORD\nBTN3: SEND");}
  else if(!recording_stop(&state.transport,session))error=BT_ATT_ERR_VALUE_NOT_ALLOWED;
- else display_locked("MIC OFF\nRecording discarded\nArm in HostPC");
+ else display_locked(VOICE_OFF,"MIC OFF\nRecording discarded\nArm in HostPC");
  k_spin_unlock(&state_lock,key);
  if(error)return BT_GATT_ERR(error);
  k_sem_give(&voice_wake);return length;
@@ -179,7 +174,7 @@ static void capture_thread(void *a,void *b,void *c) {
  cfg.channel.req_chan_map_lo=dmic_build_channel_map(0,0,IS_ENABLED(CONFIG_WALLABY_PDM_RIGHT_CHANNEL)?PDM_CHAN_RIGHT:PDM_CHAN_LEFT);
  int button_error=!gpio_is_ready_dt(&record_button)||!gpio_is_ready_dt(&send_button)?-ENODEV:gpio_pin_configure_dt(&record_button,GPIO_INPUT);
  if(!button_error)button_error=gpio_pin_configure_dt(&send_button,GPIO_INPUT);
- if(button_error){k_spinlock_key_t key=k_spin_lock(&state_lock);state.ready=false;k_spin_unlock(&state_lock,key);display_status("MIC BUTTON ERROR\nCheck KIT wiring");}
+ if(button_error){k_spinlock_key_t key=k_spin_lock(&state_lock);state.ready=false;k_spin_unlock(&state_lock,key);display_status(VOICE_ERROR,"MIC BUTTON ERROR\nCheck KIT wiring");}
  printk("VOICE|BTN2=P1.07 BTN3=P1.06 init=%d\n",button_error);
  struct alarm_button_state btn2={0},btn3={0};
  bool running=false,active=false;uint32_t generation=0,session=0,arm_started=0;
@@ -204,7 +199,7 @@ static void capture_thread(void *a,void *b,void *c) {
   uint32_t elapsed=now-arm_started;
   if(elapsed>=RECORDING_ARM_MS){fail_session(generation,"MIC ARM EXPIRED\nRe-arm in HostPC");continue;}
   if(press2){
-   if(clip.state==RECORDING_SEND)display_status("MIC SENDING\nWait for response");
+   if(clip.state==RECORDING_SEND)display_session_status(session,generation,VOICE_SENDING,"MIC SENDING\nWait for response");
    else if(!recording_start_budget(transport.sequence,elapsed))fail_session(generation,"MIC RE-ARM REQUIRED\nStop/start in HostPC");
    else{
     int ret=stop_microphone(&running);recording_start(&clip);tail=0;
@@ -212,15 +207,15 @@ static void capture_thread(void *a,void *b,void *c) {
     if(!ret)ret=dmic_trigger(microphone,DMIC_TRIGGER_START);
     running=ret==0;
     if(ret)fail_session(generation,"MIC START ERROR\nRe-arm in HostPC");
-    else{display_status("MIC REC (MAX 10 SEC)\nBTN2: RESTART\nBTN3: STOP + SEND");printk("VOICE|RECORD session=%u\n",session);}
+    else{display_session_status(session,generation,VOICE_RECORDING,"MIC REC (MAX 10 SEC)\nBTN2: RESTART\nBTN3: STOP + SEND");printk("VOICE|RECORD session=%u\n",session);}
    }
   }
   if(press3&&(clip.state==RECORDING_CAPTURE||clip.state==RECORDING_READY)){
    int ret=stop_microphone(&running);
    if(ret)fail_session(generation,"MIC STOP ERROR\nReset required");
-   else if(!clip.count){recording_cancel(&clip);display_status("MIC EMPTY\nBTN2: RECORD AGAIN");}
+   else if(!clip.count){recording_cancel(&clip);display_session_status(session,generation,VOICE_ERROR,"MIC EMPTY\nBTN2: RECORD AGAIN");}
    else if(!recording_send_budget(transport.sequence,clip.count,elapsed))fail_session(generation,"MIC RE-ARM REQUIRED\nRecording discarded");
-   else if(recording_submit(&clip)){tail=RECORDING_TAIL_FRAMES;next_send=k_uptime_get();display_status("MIC SENDING\nWait for response");printk("VOICE|SEND session=%u frames=%u\n",session,clip.count);}
+   else if(recording_submit(&clip)){tail=RECORDING_TAIL_FRAMES;next_send=k_uptime_get();display_session_status(session,generation,VOICE_SENDING,"MIC SENDING\nWait for response");printk("VOICE|SEND session=%u frames=%u\n",session,clip.count);}
   }
   if(!current_session(session,generation))continue;
   if(running&&clip.state==RECORDING_CAPTURE){
@@ -230,7 +225,7 @@ static void capture_thread(void *a,void *b,void *c) {
    if(clip.state==RECORDING_READY){
     ret=stop_microphone(&running);
     if(ret)fail_session(generation,"MIC STOP ERROR\nReset required");
-    else display_status("MIC REC LIMIT 10 SEC\nBTN3: SEND\nBTN2: RECORD AGAIN");
+    else display_session_status(session,generation,VOICE_READY,"MIC REC LIMIT 10 SEC\nBTN3: SEND\nBTN2: RECORD AGAIN");
    }
   }
   int64_t tick=k_uptime_get();
@@ -241,7 +236,7 @@ static void capture_thread(void *a,void *b,void *c) {
     else if(tail){sent=send_silence(session,generation);if(sent)tail--;}
     if(!sent){fail_session(generation,"MIC SEND CANCELLED\nRe-arm in HostPC");continue;}
     next_send=tick+20;last_keepalive=tick;
-    if(clip.cursor==clip.count&&!tail){recording_cancel(&clip);display_status("MIC SENT\nWait for response\nBTN2: NEW RECORD");}
+    if(clip.cursor==clip.count&&!tail){recording_cancel(&clip);display_session_status(session,generation,VOICE_SENT,"MIC SENT\nWait for response\nBTN2: NEW RECORD");}
    }
   }else if(tick-last_keepalive>=1000){
    if(!send_silence(session,generation)){fail_session(generation,"MIC RE-ARM REQUIRED\nStop/start in HostPC");continue;}

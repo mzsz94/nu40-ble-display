@@ -40,7 +40,7 @@ robot movement never resume automatically. A BLE disconnect silences an active
 tone while preserving the alert latch. The next BTN4 press requires release and
 a cleared latch. Debouncing requires 30 ms of stable input.
 
-## BTN2 recording and BTN3 sending (0.1.1)
+## BTN2 recording and BTN3 sending
 
 Keep the HostPC voice page open and enable its NU40 microphone input first.
 The existing BLE START command now arms the transport and shows `MIC READY`;
@@ -181,8 +181,17 @@ old queued packets after STOP/restart (including reused session IDs), notify
 failure, queue overflow, work submission failure, alarm/OTA/subscription loss
 and connection reference ownership. Its Zephyr shims do not emulate the PDM
 driver or physical button timing. Factory UF2 tests check erased regions and
-confirmation metadata preservation.
+confirmation metadata preservation. The graphics test verifies that voice labels
+preserve face/horizon pixels and measured values, warnings retain every label,
+idle restores the sample number, and text holds expire across clock wrap. It also
+covers old warning-to-text transitions and the host's intentional WG1 pause.
 The build compiles MCUboot and the app and runs `imgtool verify` on the update.
+
+Earlier 0.1.0 and 0.1.1 USB provisioning observations are recorded in
+[VALIDATION.md](https://github.com/mzsz94/micro-wallaby/blob/feat/military-wallaby-oled-graphics/voice_tactical/VALIDATION.md). The 0.1.1 boot initialized
+PDM and BTN2/BTN3/BTN4, but its unstable central connection did not establish
+successful physical button capture/transmission.
+
 The 2026-10-11 graphics bench installed the confirmed 0.2.0 factory image over
 USB, observed its WG1 boot record and read the active, confirmed image hash
 through the authenticated NU87 BLE SMP relay. The operator confirmed that the
@@ -191,41 +200,41 @@ OLED-driver ACKs. See the [bench record](https://github.com/mzsz94/micro-wallaby
 
 This upgrade did not repeat PDM waveform-quality, sustained voice throughput,
 audible BTN4 warning or complete OTA upload/test/confirm/revert tests. SMP image
-listing alone does not verify a full wireless firmware replacement.
+listing alone does not verify a full wireless firmware replacement. Version
+0.2.1 integrates button recording with that graphics source; its physical
+BTN2/BTN3 behavior and complete voice path require a new bench check.
 
 ## WG1 OLED graphics
 
 Firmware 3 adds a measured face/horizon scene renderer. Three-line `@WG1` ASCII
 commands use the existing acknowledged TEXT characteristic. The local display
-expires after three seconds without a new measurement sequence. Ordinary voice
-text still renders normally; a local BTN4 training alarm has priority.
+expires after three seconds without a new measurement sequence. The 0.2.1
+integration uses a typed local microphone state. While the face or horizon is
+visible, only the last right-hand row changes to `MIC READY`, `MIC REC`,
+`BTN3 SEND` (recording limit reached), or `MIC SEND`. Measured graphics and
+R/P/T values remain visible. `MIC SENT` lasts three seconds and `MIC ERROR`
+eight seconds; OFF and expired transient labels restore the sample number.
+These local states are not new BLE telemetry: the browser cannot infer the
+physical recording state from an audio keepalive or an arm acknowledgement.
+In ordinary three-line TEXT mode, the same label occupies the empty fourth
+row; an existing fourth payload row is preserved. Without a remote text hold
+or cached graphic, the detailed local microphone status screen remains available.
+
+Ordinary remote text, including voice answers, is held for eight seconds while
+new WG1 measurements update the cached scene. The host may intentionally stop
+ordinary WG1 updates during this period, so ageing the previous sample alone
+does not erase the answer after three seconds. At the end of the hold, the
+latest cached scene returns; if it has expired, the stale indication appears
+until a fresh sample arrives. With no cached scene, the text remains.
+
+A newly received explicit tilt/alarm/stale scene interrupts the text hold.
+A newer plain-text command can supersede an older remote warning, allowing a
+switch back to text mode. Local BTN4 alarm always has priority. Voice overlays
+never change any warning or stale label, and alarm clear restores the selected
+text/scene without resuming recording. The OLED ACK confirms the current driver
+transfer, not that a cached scene hidden by an answer hold was immediately shown.
 
 See the dashboard usage in
 [OLED-GRAPHICS.md](https://github.com/mzsz94/micro-wallaby/blob/feat/military-wallaby-oled-graphics/docs/demo/OLED-GRAPHICS.md).
 The host preview is not a camera feed; driver ACK and physical visibility remain
-separate observations. The version for this upgrade is 0.2.0.
-
-The 0.2.1 integration retains sz's BTN2/BTN3 recording implementation from
-`test/military-wallaby` together with WG1 graphics. An explicitly armed NU40
-microphone keeps its recording controls visible ahead of live graphics; BTN4
-alarms retain highest priority. Ordinary host response cards still render as
-text. Stop microphone input to return to live face/horizon rendering. Incoming
-scene samples continue updating their expiry while local recording owns the
-display; a scene ACK does not mean it replaced the recording card.
-Native callback tests and signed builds are separate from physical button tests.
-
-### Earlier button firmware validation
-
-The factory UF2 was installed on the identified BARAM-NU40 after backing up its
-previous firmware. New USB enumeration and OLED/PDM/BTN4/BLE initialization were
-observed for 0.1.0; see [the validation record](https://github.com/mzsz94/micro-wallaby/blob/feat/military-wallaby-oled-graphics/voice_tactical/VALIDATION.md).
-Version 0.1.1 button recording was subsequently installed over USB at the user's
-request. The connected board's existing bootloader and confirmed 0.1.0 app first
-matched the saved factory image. A verified app-only UF2 wrote both image slots
-(`0x10000–0xdbfff`) while preserving MCUboot, NVS/BLE settings and the USB
-bootloader. Reboot logs confirmed PDM and BTN2/BTN3/BTN4 initialization. BLE
-connected and repeatedly disconnected during observation; MTU negotiation
-reported error 14, and the central's identity was not established. BTN2/BTN3
-capture and transmission still need a bench test with a stable NU87 connection.
-PDM waveform quality, BLE throughput with Wi-Fi active, OLED pixels, audible
-BTN4 warning and complete OTA test/confirm/revert still need bench verification.
+separate observations. The merged source version is 0.2.1.

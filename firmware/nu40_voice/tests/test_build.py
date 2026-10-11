@@ -1,15 +1,46 @@
 """Factory package must preserve the MBR and the existing UF2 bootloader."""
 from pathlib import Path
+from contextlib import redirect_stderr
+import io
 import struct
 import tempfile
 import unittest
 
-from firmware.nu40_voice.build import provision_uf2
+from firmware.nu40_voice.build import firmware_version, parse_args, provision_uf2, validate_version
 
 try:
     from intelhex import IntelHex
 except ImportError:
     IntelHex = None
+
+
+class VersionTests(unittest.TestCase):
+    arguments = ["--workspace", "/unused/workspace", "--key", "/unused/key.pem",
+                 "--pairing-code-file", "/unused/pairing.txt"]
+
+    def test_default_signing_version_follows_firmware_release(self):
+        self.assertEqual(firmware_version(), "0.2.1")
+        self.assertEqual(parse_args(self.arguments).version, firmware_version())
+
+    def test_explicit_signing_version_override_and_header_limits(self):
+        self.assertEqual(parse_args(self.arguments + ["--version", "1.2.3+17"]).version, "1.2.3+17")
+        self.assertEqual(validate_version("255.255.65535+4294967295"), "255.255.65535+4294967295")
+        for version in ("0.2", "0.2.1-rc1", "-1.2.3", "256.1.1", "1.256.1", "1.2.65536", "1.2.3+4294967296"):
+            with self.subTest(version=version), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parse_args(self.arguments + ["--version", version])
+
+    def test_version_file_tweak_and_invalid_fields(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "VERSION"
+            source = "VERSION_MAJOR = 1\nVERSION_MINOR = 2\nPATCHLEVEL = 3\nVERSION_TWEAK = 4\nEXTRAVERSION =\n"
+            path.write_text(source)
+            self.assertEqual(firmware_version(path), "1.2.3+4")
+            for content in (source.replace("VERSION_MINOR = 2\n", ""), source + "VERSION_MAJOR = 2\n",
+                            source.replace("PATCHLEVEL = 3", "PATCHLEVEL = nope"),
+                            source.replace("VERSION_MAJOR = 1", "VERSION_MAJOR = 256")):
+                path.write_text(content)
+                with self.assertRaises(ValueError):
+                    firmware_version(path)
 
 
 @unittest.skipIf(IntelHex is None, "Run in the Zephyr Python environment with intelhex")

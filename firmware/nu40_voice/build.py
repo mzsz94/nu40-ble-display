@@ -55,10 +55,40 @@ def provision_uf2(boot_hex: Path, confirmed_hex: Path) -> bytes:
     return bytes(output)
 
 
-def main() -> int:
-    # Compiled firmware embeds the locally provisioned BLE pairing code.
-    # Build products and manifests therefore receive private file permissions.
-    os.umask(0o077)
+def validate_version(version: str) -> str:
+    match = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:\+([0-9]+))?", version)
+    if not match:
+        raise ValueError("version must be major.minor.patch[+build]")
+    parts = [int(value or "0") for value in match.groups()]
+    if any(value > limit for value, limit in zip(parts, (255, 255, 65535, 0xffffffff))):
+        raise ValueError("version exceeds the MCUboot image header field limits")
+    return version
+
+
+def firmware_version(path: Path = SOURCE / "VERSION") -> str:
+    """Use the same numeric version as Zephyr instead of a second release default."""
+    required = ("VERSION_MAJOR", "VERSION_MINOR", "PATCHLEVEL", "VERSION_TWEAK")
+    values = {}
+    for line in path.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        name, separator, value = line.partition("=")
+        name, value = name.strip(), value.strip()
+        if name not in required:
+            continue
+        if not separator or name in values or not re.fullmatch(r"[0-9]+", value):
+            raise ValueError("VERSION contains an invalid or duplicate numeric field")
+        values[name] = int(value)
+    if any(name not in values for name in required):
+        raise ValueError("VERSION is missing a required numeric field")
+    version = ".".join(str(values[name]) for name in required[:3])
+    if values["VERSION_TWEAK"]:
+        version += f'+{values["VERSION_TWEAK"]}'
+    return validate_version(version)
+
+
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, required=True, help="west workspace containing zephyr and bootloader/mcuboot")
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
@@ -67,11 +97,27 @@ def main() -> int:
     parser.add_argument("--key", type=Path, required=True, help="private persistent P256 signing key; never commit")
     parser.add_argument("--pairing-code-file", type=Path, required=True, help="private six-digit BLE code shared with NU87")
     parser.add_argument("--create-secrets", action="store_true", help="create missing private key/code once; preserve existing secrets")
-    parser.add_argument("--version", default="0.2.1")
+    parser.add_argument("--version", help="override the signed image version; defaults to this firmware's VERSION file")
     parser.add_argument("--overlay", type=Path, help="additional verified hardware pin overlay")
-    args = parser.parse_args()
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:\+\d+)?", args.version):
-        parser.error("version must be major.minor.patch[+build]")
+    return parser
+
+
+def parse_args(argv: list[str] | None = None, *, parser: argparse.ArgumentParser | None = None) -> argparse.Namespace:
+    parser = parser if parser is not None else argument_parser()
+    args = parser.parse_args(argv)
+    try:
+        args.version = firmware_version() if args.version is None else validate_version(args.version)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return args
+
+
+def main() -> int:
+    # Compiled firmware embeds the locally provisioned BLE pairing code.
+    # Build products and manifests therefore receive private file permissions.
+    os.umask(0o077)
+    parser = argument_parser()
+    args = parse_args(parser=parser)
     workspace, build, key, pairing = (p.expanduser().resolve() for p in (args.workspace, args.build_dir, args.key, args.pairing_code_file))
     # Keep the virtualenv entry path; resolving its symlink loses site-packages.
     python = args.python.expanduser().absolute()

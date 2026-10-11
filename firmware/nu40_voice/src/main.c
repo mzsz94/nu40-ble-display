@@ -20,6 +20,7 @@
 #include "voice.h"
 #include "alarm.h"
 #include "wallaby_graphics.h"
+#include "display_policy.h"
 
 BUILD_ASSERT(CONFIG_WALLABY_PAIRING_PASSKEY >= 0,
              "Use build.py and a private pairing code shared with NU87");
@@ -76,7 +77,12 @@ static uint32_t received_count, oled_writes, ack_count, error_count;
 static struct wallaby_scene scene = {.view = 'F', .state = 'X'};
 static bool scene_active;
 static uint32_t scene_received_at;
-static int draw_text(const char *text);
+static char display_text[BLE_DISPLAY_MAX_TEXT + 1];
+static bool text_hold;
+static bool scene_after_text;
+static uint32_t text_received_at;
+static enum voice_status displayed_voice = VOICE_OFF;
+static uint32_t voice_received_at;
 
 static int draw_scene(void)
 {
@@ -84,23 +90,14 @@ static int draw_scene(void)
 	char labels[4][WALLABY_LABEL_COLUMNS + 1];
 	uint32_t now = k_uptime_get_32();
 	int ret;
-	struct wallaby_scene effective = scene;
 
 	if (!oled_ready) {
 		return -ENODEV;
 	}
-	if (alarm_is_active()) {
-		effective.state = 'B';
-	} else {
-		char voice_text[BLE_DISPLAY_MAX_TEXT + 1];
-
-		if (voice_display_override(voice_text, sizeof(voice_text))) {
-			return draw_text(voice_text);
-		}
-	}
-	if (!wallaby_scene_render(&effective,
+	if (!wallaby_display_render(&scene,
 				 (uint32_t)(now - scene_received_at) > WALLABY_SCENE_TIMEOUT_MS,
-				 now, pixels, labels)) {
+				 now, alarm_is_active(), displayed_voice,
+				 now - voice_received_at, pixels, labels)) {
 		return -E2BIG;
 	}
 	ret = cfb_framebuffer_clear(oled, false);
@@ -191,16 +188,13 @@ static bool ack_subscribed(struct bt_conn *conn)
 	return bt_gatt_is_subscribed(conn, &display_service.attrs[2], BT_GATT_CCC_NOTIFY);
 }
 
-static int draw_text(const char *text)
+static int draw_text_raw(const char *text)
 {
 	char lines[BLE_DISPLAY_ROWS][BLE_DISPLAY_COLUMNS + 1];
 	int ret;
 
-	if (alarm_is_active()) {
-		return draw_scene();
-	}
-
-	if (!ble_display_split_lines(text, strlen(text), lines)) {
+	if (!wallaby_display_text(text, displayed_voice,
+				 k_uptime_get_32() - voice_received_at, lines)) {
 		return -E2BIG;
 	}
 	if (!oled_ready) {
@@ -217,6 +211,31 @@ static int draw_text(const char *text)
 		oled_writes++;
 	}
 	return ret;
+}
+
+static int draw_display(void)
+{
+	uint32_t now = k_uptime_get_32();
+	bool holding = wallaby_text_holding(text_hold, text_received_at, now);
+
+	if (!holding) text_hold = false;
+	if (wallaby_display_uses_scene(scene_active, &scene, alarm_is_active(), holding, scene_after_text)) {
+		return draw_scene();
+	}
+	return draw_text_raw(display_text);
+}
+
+static int show_text(const char *text, bool hold)
+{
+	char lines[BLE_DISPLAY_ROWS][BLE_DISPLAY_COLUMNS + 1];
+
+	if (!ble_display_split_lines(text, strlen(text), lines)) return -E2BIG;
+	strncpy(display_text, text, sizeof(display_text) - 1);
+	display_text[sizeof(display_text) - 1] = '\0';
+	text_hold = hold;
+	if (hold) scene_after_text = false;
+	text_received_at = k_uptime_get_32();
+	return draw_display();
 }
 
 static void connected(struct bt_conn *conn, uint8_t error)
@@ -302,12 +321,12 @@ static void process_message(const struct received_text *message)
 		}
 		scene = next;
 		scene_active = true;
-		rendered = draw_scene();
+		scene_after_text = true;
+		rendered = draw_display();
 	} else {
-		rendered = draw_text(message->text);
-		if (rendered == 0) {
-			scene_active = false;
-		}
+		/* Keep receiving measurements underneath the readable answer. The
+		 * host may also intentionally pause WG1 updates during this hold. */
+		rendered = show_text(message->text, true);
 	}
 	status = rendered == 0 ? BLE_DISPLAY_OK :
 		 rendered == -E2BIG ? BLE_DISPLAY_BAD_TEXT : BLE_DISPLAY_OLED_ERROR;
@@ -384,6 +403,7 @@ int main(void)
 	atomic_val_t seen_revision = -1;
 	int64_t report_at = 0, scene_at = 0;
 	uint32_t voice_revision = 0;
+	bool previous_alarm = false;
 	int ret;
 
 	(void)gpio_pin_configure_dt(&amp, GPIO_OUTPUT_INACTIVE);
@@ -399,7 +419,7 @@ int main(void)
 	       "protocol=1 audio=1 graphics=WG1\n", ret);
 	voice_init(&display_service.attrs[9]);
 	alarm_init(&display_service.attrs[14]);
-	(void)draw_text("MILITARY WALLABY\nNU40 PDM + OLED\nWaiting for NU87");
+	(void)show_text("MILITARY WALLABY\nNU40 PDM + OLED\nWaiting for NU87", false);
 	ret = bt_conn_auth_cb_register(&authentication);
 	if (ret == 0) { ret = bt_enable(NULL); }
 	if (ret == 0) { ret = settings_load(); }
@@ -407,7 +427,7 @@ int main(void)
 	if (ret == 0) {
 		k_work_submit(&advertising_work);
 	} else {
-		(void)draw_text("BLE INIT ERROR\nCheck USB log");
+		(void)show_text("BLE INIT ERROR\nCheck USB log", false);
 	}
 	while (true) {
 		atomic_val_t revision = atomic_get(&link_revision);
@@ -416,14 +436,15 @@ int main(void)
 			bool connected_now;
 
 			scene_active = false;
+			text_hold = false;
 
 			k_spinlock_key_t key = k_spin_lock(&link_lock);
 			connected_now = peer != NULL;
 			k_spin_unlock(&link_lock, key);
 			if (ret == 0) {
-				(void)draw_text(connected_now ?
+				(void)show_text(connected_now ?
 					"BLE CONNECTED\nWaiting for NU87 data" :
-					"WAITING FOR NU87\nBLE disconnected\nNo current data");
+					"WAITING FOR NU87\nBLE disconnected\nNo current data", false);
 			}
 			seen_revision = revision;
 		}
@@ -431,15 +452,22 @@ int main(void)
 			process_message(&message);
 		}
 		char voice_text[85];
-		if (voice_display_status(&voice_revision, voice_text, sizeof(voice_text))) {
-			scene_active = false;
-			(void)draw_text(voice_text);
+		if (voice_display_status(&voice_revision, &displayed_voice, voice_text, sizeof(voice_text))) {
+			voice_received_at = k_uptime_get_32();
+			if (!scene_active && !text_hold) {
+				(void)show_text(voice_text, false);
+			} else {
+				(void)draw_display();
+			}
 		}
 		poll_console(console);
-		if ((scene_active || alarm_is_active()) && k_uptime_get() >= scene_at) {
-			if (draw_scene() != 0) {
+		bool alarm_now = alarm_is_active();
+		if ((scene_active || alarm_now || previous_alarm != alarm_now || text_hold) &&
+		    k_uptime_get() >= scene_at) {
+			if (draw_display() != 0) {
 				error_count++;
 			}
+			previous_alarm = alarm_now;
 			scene_at = k_uptime_get() + 120;
 		}
 		if (k_uptime_get() >= report_at) {

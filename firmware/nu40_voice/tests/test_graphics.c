@@ -1,7 +1,106 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <assert.h>
 #include <stdlib.h>
-#include "wallaby_graphics.h"
+#include "display_policy.h"
+
+static void text_voice_composition(void)
+{
+	char lines[BLE_DISPLAY_ROWS][BLE_DISPLAY_COLUMNS + 1];
+	const char *text = "LIVE IMU\nR+12 P-8\nT15 #42";
+	const enum voice_status states[] = {VOICE_ARMED, VOICE_RECORDING, VOICE_READY,
+					   VOICE_SENDING, VOICE_SENT, VOICE_ERROR};
+	const char *labels[] = {"MIC READY", "MIC REC", "BTN3 SEND", "MIC SEND", "MIC SENT", "MIC ERROR"};
+
+	for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+		assert(wallaby_display_text(text, states[i], 0, lines));
+		assert(strcmp(lines[0], "LIVE IMU") == 0);
+		assert(strcmp(lines[1], "R+12 P-8") == 0);
+		assert(strcmp(lines[2], "T15 #42") == 0);
+		assert(strcmp(lines[3], labels[i]) == 0);
+	}
+	assert(wallaby_display_text(text, VOICE_OFF, 0, lines) && lines[3][0] == '\0');
+	assert(wallaby_display_text(text, VOICE_SENT, 3000, lines) && lines[3][0] == '\0');
+	assert(wallaby_display_text(text, VOICE_ERROR, 8000, lines) && lines[3][0] == '\0');
+	assert(wallaby_display_text("REPORT\nSAVED\n3 ITEMS\nUSER FOURTH ROW", VOICE_RECORDING, 0, lines));
+	assert(strcmp(lines[3], "USER FOURTH ROW") == 0);
+	/* Automatic 21-column wrapping also owns the last payload row. */
+	assert(wallaby_display_text("123456789012345678901123456789012345678901123456789012345678901LAST", VOICE_SENDING, 0, lines));
+	assert(strcmp(lines[3], "LAST") == 0);
+	assert(!wallaby_display_text(NULL, VOICE_RECORDING, 0, lines));
+	assert(!wallaby_display_text("1\n2\n3\n4\n5", VOICE_RECORDING, 0, lines));
+}
+
+static void voice_composition(void)
+{
+	struct wallaby_scene scene = {.view = 'F', .state = 'L', .roll = 12, .pitch = -8,
+				      .tilt = 15, .sample = 42};
+	uint8_t pixels[WALLABY_PIXELS], baseline[WALLABY_PIXELS];
+	char labels[4][WALLABY_LABEL_COLUMNS + 1], original[4][WALLABY_LABEL_COLUMNS + 1];
+	const enum voice_status states[] = {VOICE_ARMED, VOICE_RECORDING, VOICE_READY,
+					   VOICE_SENDING, VOICE_SENT, VOICE_ERROR};
+	const char *expected[] = {"MIC READY", "MIC REC", "BTN3 SEND", "MIC SEND", "MIC SENT", "MIC ERROR"};
+
+	for (const char *view = "FH"; *view; view++) {
+		scene.view = *view;
+		assert(wallaby_scene_render(&scene, false, 500, baseline, original));
+		for (size_t i = 0; i < sizeof(states)/sizeof(states[0]); i++) {
+			assert(wallaby_display_render(&scene, false, 500, false, states[i], 0, pixels, labels));
+			assert(memcmp(pixels, baseline, sizeof(pixels)) == 0);
+			assert(memcmp(labels, original, 3 * sizeof(labels[0])) == 0);
+			assert(strcmp(labels[3], expected[i]) == 0);
+		}
+	}
+	assert(wallaby_display_render(&scene, false, 500, false, VOICE_OFF, 0, pixels, labels));
+	assert(memcmp(labels, original, sizeof(labels)) == 0);
+	assert(wallaby_display_render(&scene, false, 500, false, VOICE_SENT, 3000, pixels, labels));
+	assert(memcmp(labels, original, sizeof(labels)) == 0);
+	assert(wallaby_display_render(&scene, false, 500, false, VOICE_ERROR, 8000, pixels, labels));
+	assert(memcmp(labels, original, sizeof(labels)) == 0);
+	assert(strcmp(wallaby_voice_label(VOICE_SENT, 2999), "MIC SENT") == 0);
+	assert(strcmp(wallaby_voice_label(VOICE_ERROR, 7999), "MIC ERROR") == 0);
+
+	/* No voice state replaces any pixel or label of warning/stale scenes. */
+	for (const char *warning = "XAB"; *warning; warning++) {
+		scene.state = *warning;
+		for (unsigned expired = 0; expired < 2; expired++) {
+			assert(wallaby_scene_render(&scene, expired, 500, baseline, original));
+			assert(wallaby_display_render(&scene, expired, 500, false, VOICE_RECORDING, 0, pixels, labels));
+			assert(memcmp(pixels, baseline, sizeof(pixels)) == 0);
+			assert(memcmp(labels, original, sizeof(labels)) == 0);
+		}
+		assert(wallaby_display_uses_scene(true, &scene, false, true, true));
+		/* A newer plain text command (including switching to text mode)
+		 * supersedes an older remote warning, without silencing BTN4. */
+		assert(!wallaby_display_uses_scene(true, &scene, false, true, false));
+		assert(wallaby_display_uses_scene(true, &scene, true, true, false));
+	}
+	scene.state = 'L';
+	struct wallaby_scene saved = scene;
+	assert(wallaby_display_render(&scene, false, 500, true, VOICE_SENDING, 0, pixels, labels));
+	assert(strcmp(labels[0], "SIM ALERT") == 0 && strcmp(labels[1], "TRAINING") == 0);
+	assert(strcmp(labels[3], "#42") == 0);
+	assert(memcmp(&scene, &saved, sizeof(scene)) == 0);
+	assert(wallaby_display_uses_scene(false, &scene, true, true, false));
+	assert(wallaby_display_render(&scene, false, 500, false, VOICE_OFF, 0, pixels, labels));
+	assert(strcmp(labels[0], "LIVE IMU") == 0);
+
+	/* Host deliberately pauses WG1 while an answer is readable. The cached
+	 * sample ages out after 3s, but cannot prematurely erase this 8s hold. */
+	assert(wallaby_text_holding(true, 1000, 8999));
+	assert(!wallaby_display_uses_scene(true, &scene, false, wallaby_text_holding(true, 1000, 5000), false));
+	assert(!wallaby_display_uses_scene(true, &scene, false, wallaby_text_holding(true, 1000, 8999), false));
+	assert(wallaby_display_uses_scene(true, &scene, false, wallaby_text_holding(true, 1000, 9000), false));
+	assert(wallaby_display_render(&scene, true, 9000, false, VOICE_RECORDING, 0, pixels, labels));
+	assert(strcmp(labels[0], "LINK STALE") == 0 && strcmp(labels[3], "CHECK LINK") == 0);
+	assert(!wallaby_text_holding(false, 1000, 1000));
+	assert(wallaby_text_holding(true, UINT32_MAX - 3999U, 3999U));
+	assert(!wallaby_text_holding(true, UINT32_MAX - 3999U, 4000U));
+	/* Fresh measurements received during a hold can be used at expiry. */
+	scene.sample = 43; scene.roll = -30;
+	assert(!wallaby_display_uses_scene(true, &scene, false, true, true));
+	assert(wallaby_display_render(&scene, false, 9000, false, VOICE_OFF, 0, pixels, labels));
+	assert(strcmp(labels[1], "R-30") == 0 && strcmp(labels[3], "#43") == 0);
+}
 
 static void render_bounds(void)
 {
@@ -95,6 +194,8 @@ int main(void)
 		command[i] = original;
 	}
 	render_bounds();
+	voice_composition();
+	text_voice_composition();
 	puts("PASS WG1 strict parsing, bounds, warning/stale priority and cosmetic blink");
 	return 0;
 }

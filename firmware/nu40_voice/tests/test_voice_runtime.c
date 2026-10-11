@@ -19,21 +19,16 @@ static void setup(void) {
 static void teardown(void) { voice_disconnected(&connection);assert(connection.references==1); }
 
 int main(void) {
- char display[85];
- setup();assert(!voice_display_override(display,sizeof(display)));
- assert(control(true,76)==6);assert(voice_display_override(display,sizeof(display)));
- assert(strstr(display,"MIC READY")&&strstr(display,"BTN2: RECORD"));
- char short_display[2];assert(voice_display_override(short_display,sizeof(short_display)));
- assert(short_display[0]=='M'&&short_display[1]==0);
- assert(!voice_display_override(NULL,sizeof(display)));
- assert(!voice_display_override(display,0));
- assert(control(false,76)==6);assert(!voice_display_override(display,sizeof(display)));
- assert(control(true,76)==6);voice_alarm_pause(true);
- assert(!voice_display_override(display,sizeof(display)));teardown();
  setup();assert(control(true,77)==6);assert(fake_dmic_starts==0);
+ uint32_t revision=0;enum voice_status ui_status=VOICE_OFF;char ui_text[85];
+ assert(voice_display_status(&revision,&ui_status,ui_text,sizeof(ui_text)));
+ assert(ui_status==VOICE_ARMED&&strstr(ui_text,"MIC READY"));
+ assert(!voice_display_status(&revision,&ui_status,ui_text,sizeof(ui_text)));
  uint32_t old_generation=state.transport.generation;
  assert(send_silence(77,old_generation));assert(audio_queue.count==1);
  assert(control(false,77)==6);send_audio(&audio_work);
+ display_session_status(77,old_generation,VOICE_RECORDING,"old capture completed late");
+ assert(state.display_status==VOICE_OFF);
  assert(fake_notify_calls==0&&!state.transport.armed);
  assert(!send_silence(77,old_generation));teardown();
 
@@ -41,6 +36,8 @@ int main(void) {
   * under the new session, including when the same session ID is reused. */
  setup();assert(control(true,88)==6);old_generation=state.transport.generation;
  assert(send_silence(88,old_generation));assert(control(true,99)==6);
+ display_session_status(88,old_generation,VOICE_SENT,"old send completed late");
+ assert(state.display_status==VOICE_ARMED&&strstr(state.display,"MIC READY"));
  assert(control(false,88)<0&&state.transport.armed);
  assert(send_silence(99,state.transport.generation));send_audio(&audio_work);
  assert(fake_notify_calls==1&&voice_u32(fake_notifications[0]+4)==99);
@@ -55,6 +52,8 @@ int main(void) {
  assert(send_silence(101,old_generation));assert(send_silence(101,old_generation));
  fake_notify_error=-ENOMEM;send_audio(&audio_work);
  assert(fake_notify_calls==1&&!state.transport.armed);
+ assert(voice_display_status(&revision,&ui_status,ui_text,sizeof(ui_text)));
+ assert(ui_status==VOICE_ERROR&&strstr(ui_text,"MIC SEND ERROR"));
  fake_notify_error=0;send_audio(&audio_work);
  assert(fake_notify_calls==1&&!send_silence(101,old_generation));
  voice_alarm_pause(false);voice_ota_pause(false);assert(!state.transport.armed);
@@ -73,6 +72,7 @@ int main(void) {
  setup();assert(control(true,120)==6);assert(send_silence(120,state.transport.generation));
  voice_alarm_pause(true);send_audio(&audio_work);assert(fake_notify_calls==0);
  assert(control(true,121)<0);voice_alarm_pause(false);assert(!state.transport.armed);
+ assert(state.display_status==VOICE_OFF&&strstr(state.display,"Alarm cleared"));
  assert(control(true,121)==6);assert(send_silence(121,state.transport.generation));
  voice_ota_pause(true);send_audio(&audio_work);assert(fake_notify_calls==0);
  assert(control(true,122)<0);voice_ota_pause(false);assert(!state.transport.armed);
