@@ -120,11 +120,20 @@ void voice_init(const struct bt_gatt_attr *audio_attr) {
  printk("VOICE|BOOT ready=%u source=NU40_PDM rate=16000 frame=176 buttons=2,3\n",state.ready);
  k_sem_give(&voice_ready);
 }
-void voice_connected(struct bt_conn *conn) {
- k_spinlock_key_t key=k_spin_lock(&state_lock);
- state.peer=bt_conn_ref(conn);state.subscribed=false;cancel_locked("MIC OFF\nArm in HostPC");
- k_spin_unlock(&state_lock,key);
- int ret=bt_gatt_exchange_mtu(conn,&mtu_params);printk("VOICE|MTU requested=247 result=%d\n",ret);
+void voice_connected(struct bt_conn *conn)
+{
+	/* Bonded CCC restoration can notify before the application connected
+	 * callback. An identical subsequent CCC write need not notify again. */
+	bool subscribed = bt_gatt_is_subscribed(conn, state.audio_attr, BT_GATT_CCC_NOTIFY);
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	state.peer = bt_conn_ref(conn);
+	state.subscribed = subscribed;
+	cancel_locked("MIC OFF\nArm in HostPC");
+	k_spin_unlock(&state_lock, key);
+	int ret = bt_gatt_exchange_mtu(conn, &mtu_params);
+
+	printk("VOICE|MTU requested=247 result=%d\n", ret);
 }
 void voice_disconnected(struct bt_conn *conn) {
  struct bt_conn *release=NULL;k_spinlock_key_t key=k_spin_lock(&state_lock);

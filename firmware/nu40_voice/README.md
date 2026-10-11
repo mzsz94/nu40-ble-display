@@ -119,10 +119,18 @@ python firmware/nu40_voice/build.py \
   --sdk /path/to/zephyr-sdk \
   --key build/private/nu40-signing.pem \
   --pairing-code-file build/private/ble-passkey.txt \
-  --create-secrets --version 0.2.1
+  --create-secrets
 ```
 
 The first run creates missing secrets with mode 600. Later runs preserve them.
+The default signed version follows this application's `VERSION` file (currently
+`0.2.2`). Version 0.2.2 restores the effective notification subscription on a
+bonded reconnect. Zephyr can restore a saved CCC before the application's
+connected callback; writing the same CCC value again need not call its change
+callback. Clearing the local subscription flag unconditionally could therefore
+reject microphone START or suppress an alarm ACK while OLED writes still work.
+Audio and alarm callbacks now read the restored subscription, keep audio
+disarmed until a new explicit START, and republish an existing alarm latch.
 Use the **same private six-digit pairing-code file for the NU87 build**. Values
 are never printed. Keep keys outside the pristine build directory and out of
 Git; the repository's `build/` is ignored. Preserve the signing key for future

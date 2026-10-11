@@ -19,7 +19,7 @@ class VersionTests(unittest.TestCase):
                  "--pairing-code-file", "/unused/pairing.txt"]
 
     def test_default_signing_version_follows_firmware_release(self):
-        self.assertEqual(firmware_version(), "0.2.1")
+        self.assertEqual(firmware_version(), "0.2.2")
         self.assertEqual(parse_args(self.arguments).version, firmware_version())
 
     def test_explicit_signing_version_override_and_header_limits(self):

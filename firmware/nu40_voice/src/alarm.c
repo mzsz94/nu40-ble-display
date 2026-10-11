@@ -126,9 +126,15 @@ void alarm_init(const struct bt_gatt_attr *ack_attr)
 
 void alarm_connected(struct bt_conn *conn)
 {
- k_spinlock_key_t key=k_spin_lock(&link_lock);
- link.peer=bt_conn_ref(conn);link.subscribed=false;
- k_spin_unlock(&link_lock,key);
+	/* Restore the effective CCC state even if its callback ran before this
+	 * connected callback. Rewriting the same CCC value may not call it again. */
+	bool subscribed = bt_gatt_is_subscribed(conn, link.ack_attr, BT_GATT_CCC_NOTIFY);
+	k_spinlock_key_t key = k_spin_lock(&link_lock);
+
+	link.peer = bt_conn_ref(conn);
+	link.subscribed = subscribed;
+	link.resend = subscribed;
+	k_spin_unlock(&link_lock, key);
 }
 
 void alarm_disconnected(struct bt_conn *conn)
