@@ -255,7 +255,7 @@ transfer, not that a cached scene hidden by an answer hold was immediately shown
 See the dashboard usage in
 [OLED-GRAPHICS.md](https://github.com/mzsz94/micro-wallaby/blob/feat/military-wallaby-oled-graphics/docs/demo/OLED-GRAPHICS.md).
 The host preview is not a camera feed; driver ACK and physical visibility remain
-separate observations. The last confirmed bench version in this section is 0.2.2; current source is 0.2.3.
+separate observations. The preceding historical bench is 0.2.2; current source and active confirmed bench are 0.2.3.
 
 ### Responsive graphics (0.2.3)
 
@@ -276,3 +276,10 @@ Raw I2C evidence, gravity validity, tilt thresholds and freshness limits are
 unchanged. Native parser/raster/interpolation tests include inversion in both
 directions, clock wrap, retargeting and warning priority. Hardware installation
 and measured cadence are documented in the owning repository's demo guide.
+
+The actual 0.2.3 BLE SMP update was test-booted, checked and explicitly confirmed.
+Active image hash: `bd6e555d5a542d0a3efae2c61b95230794d838cb09d64e26188957a0a233e58a`.
+The subsequent short Host run observed a 0.496 s median OLED-driver ACK gap, with
+no new BLE disconnects or output errors. Host input still exceeded its unchanged
+freshness limit in 12/600 snapshots; physical inversion and end-to-end latency
+remain unverified. The measured cadence is not a guaranteed frame rate.

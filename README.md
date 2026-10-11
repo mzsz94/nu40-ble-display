@@ -1,7 +1,7 @@
 # NU40DK-KIT BLE · 오디오 · SD · OTA
 
 Military Wallaby 작업 앱은 [`firmware/nu40_voice`](firmware/nu40_voice/README.md)입니다.
-현재 소스는 `0.2.2`이며 실측 IMU 얼굴·수평계, BTN2 녹음·BTN3 전송과 저장된 BLE
+현재 소스와 활성·확정 실기 버전은 `0.2.3`이며 실측 IMU 얼굴·수평계, BTN2 녹음·BTN3 전송과 저장된 BLE
 구독의 재연결 처리를 포함합니다. 이 구성의 HostPC·NU87 코드는
 [micro-wallaby 작업 브랜치](https://github.com/mzsz94/micro-wallaby/tree/feat/military-wallaby-oled-graphics)에
 있으며 두 보드 모두 Zephyr를 사용합니다. [그래픽·실기 안내](docs/military-oled.md)를 참고하세요.
