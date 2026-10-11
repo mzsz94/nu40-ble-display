@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+mainmenu "military-wallaby NU40 microphone and display"
+config WALLABY_PAIRING_PASSKEY
+    int "Locally provisioned BLE pairing passkey"
+    range -1 999999
+    default -1
+    help
+      Supply via build.py from a private six-digit file shared with NU87.
+      The unset value fails compilation. Never commit a known passkey.
+config WALLABY_PDM_RIGHT_CHANNEL
+    bool "Use PDM right channel instead of vendor default left"
+    default n
+source "Kconfig.zephyr"

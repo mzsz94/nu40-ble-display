@@ -23,6 +23,7 @@
 #include "ble_display_protocol.h"
 #include "ble_face.h"
 #include "kit_io.h"
+#include "wallaby_graphics.h"
 
 void kit_mgmt_init(void);
 
@@ -59,6 +60,9 @@ static bool oled_ready;
 static uint32_t received_count, oled_writes, ack_count, error_count;
 static struct received_text latest_remote;
 static bool have_remote;
+static struct wallaby_scene scene;
+static bool scene_active;
+static uint32_t scene_received_at;
 
 #if defined(CONFIG_BOOTLOADER_MCUBOOT)
 static bool image_confirmed;
@@ -202,6 +206,40 @@ static int draw_current(void)
 	char text[BLE_DISPLAY_MAX_TEXT + 1];
 
 	kit_snapshot(&s);
+	if (scene_active && (s.page == 0 || scene.state == 'A')) {
+		uint8_t pixels[WALLABY_PIXELS];
+		char labels[4][WALLABY_LABEL_COLUMNS + 1];
+		uint32_t now = k_uptime_get_32();
+		int ret = oled_ready ? 0 : -ENODEV;
+
+		if (!wallaby_scene_render(&scene,
+			(uint32_t)(now - scene_received_at) > WALLABY_SCENE_TIMEOUT_MS,
+			now, pixels, labels)) {
+			return -E2BIG;
+		}
+		if (ret == 0) {
+			ret = cfb_framebuffer_clear(oled, false);
+		}
+		for (int y = 0; y < 32 && ret == 0; y++) {
+			for (int x = 0; x < 64 && ret == 0; x++) {
+				if (pixels[(y / 8) * 128 + x] & (1U << (y % 8))) {
+					struct cfb_position point = {.x = x, .y = y};
+
+					ret = cfb_draw_point(oled, &point);
+				}
+			}
+		}
+		for (int row = 0; row < 4 && ret == 0; row++) {
+			ret = cfb_print(oled, labels[row], 66, row * 8);
+		}
+		if (ret == 0) {
+			ret = cfb_framebuffer_finalize(oled);
+		}
+		if (ret == 0) {
+			oled_writes++;
+		}
+		return ret;
+	}
 	if (s.page != 0) {
 		kit_local_screen(text);
 		return draw_text(text);
@@ -282,9 +320,24 @@ static void process_message(const struct received_text *message)
 	if (conn == NULL) {
 		return;
 	}
-	latest_remote = *message;
-	have_remote = true;
-	rendered = draw_current();
+	struct wallaby_scene next;
+	int parsed = message->type == BLE_DISPLAY_TEXT ?
+		     wallaby_scene_parse(message->text, &next) : 0;
+
+	if (parsed < 0) {
+		rendered = -E2BIG;
+	} else {
+		if (parsed == 1 && (!scene_active || next.sample != scene.sample)) {
+			scene_received_at = k_uptime_get_32();
+		}
+		if (parsed == 1) {
+			scene = next;
+		}
+		scene_active = parsed == 1;
+		latest_remote = *message;
+		have_remote = true;
+		rendered = draw_current();
+	}
 	status = rendered == 0 ? BLE_DISPLAY_OK :
 		 rendered == -E2BIG ? BLE_DISPLAY_BAD_TEXT : BLE_DISPLAY_OLED_ERROR;
 	ble_display_build_ack(message->sequence, status, ack);
@@ -426,6 +479,7 @@ int main(void)
 			kit_set_link(connected_now);
 			if (!connected_now) {
 				have_remote = false;
+				scene_active = false;
 			}
 			if (ret == 0) {
 				(void)draw_text(connected_now ?
@@ -443,7 +497,7 @@ int main(void)
 
 		kit_snapshot(&kit);
 		if (kit.page != previous_page ||
-		    (k_uptime_get() >= screen_at && (kit.page != 0 || !have_remote))) {
+		    (k_uptime_get() >= screen_at && (kit.page != 0 || !have_remote || scene_active))) {
 			(void)draw_current();
 			previous_page = kit.page;
 			screen_at = k_uptime_get() + 120;

@@ -1,0 +1,71 @@
+/ {
+	aliases { dmic0 = &pdm0; wallaby-alarm-button = &kit_btn4; };
+	kit_buttons {
+		compatible = "gpio-keys";
+		kit_btn4: button4 { gpios = <&gpio1 5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; };
+	};
+	chosen { zephyr,display = &kit_oled; };
+	kit_controls {
+		compatible = "gpio-leds";
+		kit_amp: amp { gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>; };
+	};
+};
+
+&uart0 { status = "disabled"; };
+&uart1 { status = "disabled"; };
+&i2c1 { status = "disabled"; };
+&spi1 { status = "disabled"; };
+&spi3 { status = "disabled"; };
+/* Manufacturer PDM.setPins(7,5,-1): DIN P0.07, CLK P0.05. */
+&pdm0 {
+	status = "okay";
+	pinctrl-0 = <&kit_pdm>;
+	pinctrl-names = "default";
+	clock-source = "PCLK32M_HFXO";
+	queue-size = <8>;
+};
+&i2s0 {
+	status = "okay";
+	pinctrl-0 = <&kit_i2s>;
+	pinctrl-names = "default";
+	clock-source = "PCLK32M_HFXO";
+};
+
+&pinctrl {
+	kit_i2s: kit_i2s {
+		group1 {
+			psels = <NRF_PSEL(I2S_SCK_M, 1, 9)>, <NRF_PSEL(I2S_LRCK_M, 1, 8)>,
+				<NRF_PSEL(I2S_SDOUT, 0, 19)>;
+		};
+	};
+	kit_pdm: kit_pdm {
+		group1 { psels = <NRF_PSEL(PDM_CLK, 0, 5)>, <NRF_PSEL(PDM_DIN, 0, 7)>; };
+	};
+	kit_i2c: kit_i2c {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SCL, 0, 21)>, <NRF_PSEL(TWIM_SDA, 0, 22)>;
+		};
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&kit_i2c>;
+	/delete-property/ pinctrl-1;
+	pinctrl-names = "default";
+	kit_oled: ssd1306@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+		width = <128>;
+		height = <32>;
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <31>;
+		segment-remap;
+		com-invdir;
+		com-sequential;
+		prechargep = <0x22>;
+	};
+};

@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Build signed NU40 firmware and initial provisioning UF2. Never flashes hardware."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import struct
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE = Path(__file__).resolve().parent
+FAMILY_NRF52840 = 0xADA52840
+SLOT_SIZE = 0x66000
+
+
+def private_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(data)
+
+
+def provision_uf2(boot_hex: Path, confirmed_hex: Path) -> bytes:
+    from intelhex import IntelHex
+    images = [(IntelHex(str(boot_hex)), 0x1000, 0x10000),
+              (IntelHex(str(confirmed_hex)), 0x10000, 0x76000)]
+    blocks = []
+    for image, low, high in images:
+        if not image.addresses() or any(address < low or address >= high for address in image.addresses()):
+            raise ValueError("Provisioning image exceeds its board partition; UF2/MBR region must be preserved")
+        # Confirmed image trailers are sparse and need not start on a UF2 page.
+        # Only touch pages containing data; absent bytes in a page remain 0xff.
+        for address in sorted({address & ~255 for address in image.addresses()}):
+            payload = bytes(image.tobinarray(start=address, size=256))
+            blocks.append((address, payload))
+    output = bytearray()
+    for number, (address, payload) in enumerate(blocks):
+        header = struct.pack("<8I", 0x0A324655, 0x9E5D5157, 0x2000, address, 256, number, len(blocks), FAMILY_NRF52840)
+        output.extend(header + payload + bytes(220) + struct.pack("<I", 0x0AB16F30))
+    return bytes(output)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", type=Path, required=True, help="west workspace containing zephyr and bootloader/mcuboot")
+    parser.add_argument("--python", type=Path, default=Path(sys.executable))
+    parser.add_argument("--sdk", type=Path)
+    parser.add_argument("--build-dir", type=Path, default=ROOT / "build/nu40-voice")
+    parser.add_argument("--key", type=Path, required=True, help="private persistent P256 signing key; never commit")
+    parser.add_argument("--pairing-code-file", type=Path, required=True, help="private six-digit BLE code shared with NU87")
+    parser.add_argument("--create-secrets", action="store_true", help="create missing private key/code once; preserve existing secrets")
+    parser.add_argument("--version", default="0.1.0")
+    parser.add_argument("--overlay", type=Path, help="additional verified hardware pin overlay")
+    args = parser.parse_args()
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:\+\d+)?", args.version):
+        parser.error("version must be major.minor.patch[+build]")
+    workspace, build, key, pairing = (p.expanduser().resolve() for p in (args.workspace, args.build_dir, args.key, args.pairing_code_file))
+    # Keep the virtualenv entry path; resolving its symlink loses site-packages.
+    python = args.python.expanduser().absolute()
+    zephyr = workspace / "zephyr"
+    imgtool = workspace / "bootloader/mcuboot/scripts/imgtool.py"
+    if not zephyr.is_dir() or not imgtool.is_file():
+        parser.error("workspace must include Zephyr and MCUboot sources")
+    if key.is_relative_to(build) or pairing.is_relative_to(build):
+        parser.error("Keep secrets outside build-dir: pristine builds replace that directory")
+    if not key.exists() and args.create_secrets:
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import serialization
+        private_write(key, ec.generate_private_key(ec.SECP256R1()).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    if not pairing.exists() and args.create_secrets:
+        private_write(pairing, f"{secrets.randbelow(1000000):06d}\n".encode())
+    if not key.is_file() or not pairing.is_file():
+        parser.error("Private key/code missing; use --create-secrets once or provide existing files")
+    code = pairing.read_text().strip()
+    if not re.fullmatch(r"[0-9]{6}", code):
+        parser.error("pairing code file must contain exactly six decimal digits")
+    # Check type before invoking the build, without printing key material.
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    signing_key = serialization.load_pem_private_key(key.read_bytes(), password=None)
+    if not isinstance(signing_key, ec.EllipticCurvePrivateKey) or not isinstance(signing_key.curve, ec.SECP256R1):
+        parser.error("signing key must be an ECDSA P256 private key")
+    if key.stat().st_mode & 0o077 or pairing.stat().st_mode & 0o077:
+        parser.error("Set private key/code file permissions to 600 before building")
+    local_config = key.parent / "nu40-private.conf"
+    config_text = f'CONFIG_WALLABY_PAIRING_PASSKEY={int(code)}\nCONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION="{args.version}"\n'
+    descriptor = os.open(local_config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as output:
+        output.write(config_text)
+    os.chmod(local_config, 0o600)
+    env = dict(os.environ, ZEPHYR_BASE=str(zephyr), ZEPHYR_TOOLCHAIN_VARIANT="zephyr")
+    env["PATH"] = str(python.parent) + os.pathsep + env.get("PATH", "")
+    if args.sdk:
+        env["ZEPHYR_SDK_INSTALL_DIR"] = str(args.sdk.expanduser().resolve())
+    command = [str(python), "-m", "west", "build", "--sysbuild", "-p", "always", "-b", "nucode_nu40/nrf52840", str(SOURCE), "-d", str(build), "--",
+               f"-DSB_CONFIG_BOOT_SIGNATURE_KEY_FILE={json.dumps(str(key))}", f"-Dnu40_voice_EXTRA_CONF_FILE={local_config}"]
+    if args.overlay:
+        command.append(f"-Dnu40_voice_EXTRA_DTC_OVERLAY_FILE={args.overlay.expanduser().resolve()}")
+    subprocess.run(command, cwd=workspace, env=env, check=True)
+    app = build / "nu40_voice/zephyr"
+    boot = build / "mcuboot/zephyr/zephyr.hex"
+    update = app / "zephyr.signed.bin"
+    if update.stat().st_size > SLOT_SIZE - 0x2000:
+        raise ValueError("Signed update exceeds swap-move image capacity (two pages reserved)")
+    subprocess.run([str(python), str(imgtool), "verify", "-k", str(key), str(update)], check=True, env=env)
+    artifacts = build / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    provision = artifacts / "initial-provision.uf2"
+    provision.write_bytes(provision_uf2(boot, app / "zephyr.signed.confirmed.hex"))
+    shutil.copyfile(update, artifacts / "nu40-update.signed.bin")
+    manifest = {"project": "military-wallaby", "version": args.version,
+                "transport": "BLE SMP authenticated L3", "signature": "ECDSA-P256",
+                "test_requires_explicit_host_confirmation": True,
+                "initial_provision_requires_usb": True,
+                "files": {name: {"bytes": (artifacts / name).stat().st_size,
+                                   "sha256": hashlib.sha256((artifacts / name).read_bytes()).hexdigest()}
+                          for name in ("initial-provision.uf2", "nu40-update.signed.bin")}}
+    (artifacts / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"Built and signature-verified: {artifacts}")
+    print("No device was flashed. Preserve the private signing key and shared BLE pairing file.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"Build failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise SystemExit(1)

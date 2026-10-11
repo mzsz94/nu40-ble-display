@@ -43,3 +43,6 @@ Zephyr의 Python 의존성과 SDK도 설치된 환경이 필요합니다. 다른
 NU40 0.1.2의 [실기 검증 결과](docs/kit-hardware-results.md)와
 [OTA 안내](ota/README.md)에 검증 범위와 실패 기록을 구분합니다.
 개인 키, SDK, 생성 펌웨어 바이너리와 원본 연속 로그는 저장소에 포함하지 않습니다.
+
+Military Wallaby의 실제 IMU와 연동하는 얼굴·수평계 OLED 화면은
+[그래픽 안내](docs/military-oled.md)를 참고하세요.
