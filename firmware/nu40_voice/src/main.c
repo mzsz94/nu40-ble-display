@@ -76,6 +76,7 @@ static uint32_t received_count, oled_writes, ack_count, error_count;
 static struct wallaby_scene scene = {.view = 'F', .state = 'X'};
 static bool scene_active;
 static uint32_t scene_received_at;
+static int draw_text(const char *text);
 
 static int draw_scene(void)
 {
@@ -90,6 +91,12 @@ static int draw_scene(void)
 	}
 	if (alarm_is_active()) {
 		effective.state = 'B';
+	} else {
+		char voice_text[BLE_DISPLAY_MAX_TEXT + 1];
+
+		if (voice_display_override(voice_text, sizeof(voice_text))) {
+			return draw_text(voice_text);
+		}
 	}
 	if (!wallaby_scene_render(&effective,
 				 (uint32_t)(now - scene_received_at) > WALLABY_SCENE_TIMEOUT_MS,
@@ -376,6 +383,7 @@ int main(void)
 	struct received_text message;
 	atomic_val_t seen_revision = -1;
 	int64_t report_at = 0, scene_at = 0;
+	uint32_t voice_revision = 0;
 	int ret;
 
 	(void)gpio_pin_configure_dt(&amp, GPIO_OUTPUT_INACTIVE);
@@ -421,6 +429,11 @@ int main(void)
 		}
 		if (k_msgq_get(&messages, &message, K_MSEC(20)) == 0) {
 			process_message(&message);
+		}
+		char voice_text[85];
+		if (voice_display_status(&voice_revision, voice_text, sizeof(voice_text))) {
+			scene_active = false;
+			(void)draw_text(voice_text);
 		}
 		poll_console(console);
 		if ((scene_active || alarm_is_active()) && k_uptime_get() >= scene_at) {

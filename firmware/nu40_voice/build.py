@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = Path(__file__).resolve().parent
 FAMILY_NRF52840 = 0xADA52840
 SLOT_SIZE = 0x66000
+FACTORY_START = 0x1000
+FACTORY_END = 0xE0000
 
 
 def private_write(path: Path, data: bytes) -> None:
@@ -31,23 +33,32 @@ def provision_uf2(boot_hex: Path, confirmed_hex: Path) -> bytes:
     from intelhex import IntelHex
     images = [(IntelHex(str(boot_hex)), 0x1000, 0x10000),
               (IntelHex(str(confirmed_hex)), 0x10000, 0x76000)]
-    blocks = []
+    # This is a factory migration, including devices with another MCUboot
+    # layout. UF2 preserves old bytes not explicitly present in a payload,
+    # even when it erases/reprograms the surrounding physical flash page.
+    # Emit every byte in our firmware partitions to clear stale primary swap
+    # status, secondary images/trailers and NVS bonds before the first boot.
+    # Keep the existing MBR and onboard UF2 bootloader completely untouched.
+    flash = bytearray(b"\xff" * (FACTORY_END - FACTORY_START))
     for image, low, high in images:
         if not image.addresses() or any(address < low or address >= high for address in image.addresses()):
             raise ValueError("Provisioning image exceeds its board partition; UF2/MBR region must be preserved")
-        # Confirmed image trailers are sparse and need not start on a UF2 page.
-        # Only touch pages containing data; absent bytes in a page remain 0xff.
-        for address in sorted({address & ~255 for address in image.addresses()}):
-            payload = bytes(image.tobinarray(start=address, size=256))
-            blocks.append((address, payload))
+        for address in image.addresses():
+            flash[address - FACTORY_START] = image[address]
     output = bytearray()
-    for number, (address, payload) in enumerate(blocks):
-        header = struct.pack("<8I", 0x0A324655, 0x9E5D5157, 0x2000, address, 256, number, len(blocks), FAMILY_NRF52840)
+    count = len(flash) // 256
+    for number in range(count):
+        address = FACTORY_START + number * 256
+        payload = flash[number * 256:(number + 1) * 256]
+        header = struct.pack("<8I", 0x0A324655, 0x9E5D5157, 0x2000, address, 256, number, count, FAMILY_NRF52840)
         output.extend(header + payload + bytes(220) + struct.pack("<I", 0x0AB16F30))
     return bytes(output)
 
 
 def main() -> int:
+    # Compiled firmware embeds the locally provisioned BLE pairing code.
+    # Build products and manifests therefore receive private file permissions.
+    os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, required=True, help="west workspace containing zephyr and bootloader/mcuboot")
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
@@ -56,7 +67,7 @@ def main() -> int:
     parser.add_argument("--key", type=Path, required=True, help="private persistent P256 signing key; never commit")
     parser.add_argument("--pairing-code-file", type=Path, required=True, help="private six-digit BLE code shared with NU87")
     parser.add_argument("--create-secrets", action="store_true", help="create missing private key/code once; preserve existing secrets")
-    parser.add_argument("--version", default="0.1.0")
+    parser.add_argument("--version", default="0.2.1")
     parser.add_argument("--overlay", type=Path, help="additional verified hardware pin overlay")
     args = parser.parse_args()
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:\+\d+)?", args.version):
@@ -70,6 +81,8 @@ def main() -> int:
         parser.error("workspace must include Zephyr and MCUboot sources")
     if key.is_relative_to(build) or pairing.is_relative_to(build):
         parser.error("Keep secrets outside build-dir: pristine builds replace that directory")
+    build.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(build, 0o700)
     if not key.exists() and args.create_secrets:
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.hazmat.primitives import serialization
@@ -112,7 +125,8 @@ def main() -> int:
         raise ValueError("Signed update exceeds swap-move image capacity (two pages reserved)")
     subprocess.run([str(python), str(imgtool), "verify", "-k", str(key), str(update)], check=True, env=env)
     artifacts = build / "artifacts"
-    artifacts.mkdir(exist_ok=True)
+    artifacts.mkdir(exist_ok=True, mode=0o700)
+    os.chmod(artifacts, 0o700)
     provision = artifacts / "initial-provision.uf2"
     provision.write_bytes(provision_uf2(boot, app / "zephyr.signed.confirmed.hex"))
     shutil.copyfile(update, artifacts / "nu40-update.signed.bin")
@@ -120,10 +134,14 @@ def main() -> int:
                 "transport": "BLE SMP authenticated L3", "signature": "ECDSA-P256",
                 "test_requires_explicit_host_confirmation": True,
                 "initial_provision_requires_usb": True,
+                "initial_provision_flash_range": {"start": "0x1000", "end_exclusive": "0xe0000"},
+                "initial_provision_resets": ["previous firmware and MCUboot swap metadata", "secondary image slot", "NVS settings and BLE bonds"],
                 "files": {name: {"bytes": (artifacts / name).stat().st_size,
                                    "sha256": hashlib.sha256((artifacts / name).read_bytes()).hexdigest()}
                           for name in ("initial-provision.uf2", "nu40-update.signed.bin")}}
     (artifacts / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    for path in (provision, artifacts / "nu40-update.signed.bin", artifacts / "manifest.json"):
+        os.chmod(path, 0o600)
     print(f"Built and signature-verified: {artifacts}")
     print("No device was flashed. Preserve the private signing key and shared BLE pairing file.")
     return 0

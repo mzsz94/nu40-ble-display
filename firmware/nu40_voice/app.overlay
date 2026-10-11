@@ -1,7 +1,11 @@
 / {
-	aliases { dmic0 = &pdm0; wallaby-alarm-button = &kit_btn4; };
+	aliases { dmic0 = &pdm0; wallaby-alarm-button = &kit_btn4;
+		wallaby-record-button = &kit_btn2; wallaby-send-button = &kit_btn3; };
 	kit_buttons {
 		compatible = "gpio-keys";
+		/* Manufacturer BTN_PREV=39 (BTN2), BTN_NEXT=38 (BTN3). */
+		kit_btn2: button2 { gpios = <&gpio1 7 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; };
+		kit_btn3: button3 { gpios = <&gpio1 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; };
 		kit_btn4: button4 { gpios = <&gpio1 5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; };
 	};
 	chosen { zephyr,display = &kit_oled; };
