@@ -1,5 +1,11 @@
 # NU40DK-KIT BLE · 오디오 · SD · OTA
 
+Military Wallaby 작업 앱은 [`firmware/nu40_voice`](firmware/nu40_voice/README.md)입니다.
+현재 소스는 `0.2.2`이며 실측 IMU 얼굴·수평계, BTN2 녹음·BTN3 전송과 저장된 BLE
+구독의 재연결 처리를 포함합니다. 이 구성의 HostPC·NU87 코드는
+[micro-wallaby 작업 브랜치](https://github.com/mzsz94/micro-wallaby/tree/feat/military-wallaby-oled-graphics)에
+있으며 두 보드 모두 Zephyr를 사용합니다. [그래픽·실기 안내](docs/military-oled.md)를 참고하세요.
+
 NU40DK-KIT의 모든 내장 입출력을 사용하는 Zephyr 앱입니다. OLED 문자열·움직이는 얼굴,
 버튼 4개, RGB 4개, 마이크 음량·2초 녹음, 스피커 비프·재생, microSD WAV 저장·대조를
 통합합니다. NU87을 통한 BLE 펌웨어 업데이트와 원격 KIT 제어를 지원합니다.
@@ -9,7 +15,7 @@ NU40DK-KIT의 모든 내장 입출력을 사용하는 Zephyr 앱입니다. OLED 
 - [단독 KIT 진단 앱](kit_selftest/README.md)
 - [NU87 중계 앱](https://github.com/mzsz94/micro-wallaby/tree/feat/nu87-nu40-kit-ota/firmware/nu87_nu40_bridge)
 
-NU40은 Zephyr, NU87은 AmebaD Arduino 3.1.9를 사용합니다.
+기존 전체 KIT 예제에서는 NU40은 Zephyr, NU87 중계 앱은 AmebaD Arduino 3.1.9를 사용합니다.
 기존 IMU 센서 앱과는 별도 기능이며 이 키트 자체에는 IMU가 포함되지 않습니다.
 
 ## 개발 환경

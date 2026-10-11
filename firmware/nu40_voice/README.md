@@ -206,11 +206,21 @@ through the authenticated NU87 BLE SMP relay. The operator confirmed that the
 OLED face responds to the real IMU. Face/horizon/text commands returned matching
 OLED-driver ACKs. See the [bench record](https://github.com/mzsz94/micro-wallaby/blob/feat/military-wallaby-oled-graphics/docs/demo/OLED-GRAPHICS.md).
 
-This upgrade did not repeat PDM waveform-quality, sustained voice throughput,
+That 0.2.0 upgrade did not repeat PDM waveform-quality, sustained voice throughput,
 audible BTN4 warning or complete OTA upload/test/confirm/revert tests. SMP image
 listing alone does not verify a full wireless firmware replacement. Version
 0.2.1 integrates button recording with that graphics source; its physical
 BTN2/BTN3 behavior and complete voice path require a new bench check.
+
+Version 0.2.2 was subsequently uploaded over authenticated BLE SMP, test-booted,
+checked and explicitly confirmed on the actual NU40. A further software reset
+retained the same active, confirmed image hash:
+`9f46926b733401b928594d3b41eec0938f35078378cf80af77864a73e1024568`.
+OLED and alarm-clear ACKs and microphone START/STOP succeeded before confirmation
+and after that reset. Three silent armed frames per check verified transport
+only; physical BTN2/BTN3 capture and speech quality were not tested. An earlier
+unconfirmed 0.2.1 image reverted to 0.2.0 on software reset. Power loss during OTA
+and sustained radio stability remain separate bench work.
 
 ## WG1 OLED graphics
 
@@ -245,4 +255,4 @@ transfer, not that a cached scene hidden by an answer hold was immediately shown
 See the dashboard usage in
 [OLED-GRAPHICS.md](https://github.com/mzsz94/micro-wallaby/blob/feat/military-wallaby-oled-graphics/docs/demo/OLED-GRAPHICS.md).
 The host preview is not a camera feed; driver ACK and physical visibility remain
-separate observations. The merged source version is 0.2.1.
+separate observations. The current source and confirmed bench version is 0.2.2.

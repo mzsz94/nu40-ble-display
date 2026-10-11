@@ -78,3 +78,32 @@ and virtual patrol, W-key driving and Space stopping. The sensor remains on the
 desk during that UI check; the clip does not claim a new physical tilt-warning
 test or a camera view of the OLED. The host regression suites passed 134 Python
 and 52 JavaScript tests, and the real browser check reported no JavaScript errors.
+
+## 0.2.2 wireless update and reconnect bench
+
+Collaborator sz's button recording and voice-overlay changes are integrated.
+Version `0.2.2` also fixes connection callbacks that cleared a restored, bonded
+CCC subscription. Both microphone and alarm callbacks now read the actual GATT
+subscription; audio still requires explicit START and physical button control.
+The native regression includes the production callbacks, fails with the old
+implementation and passes with the fix. All 10 NU40 tests passed with ASan/UBSan
+in the C harnesses.
+
+The real NU40 received the signed `0.2.2` image through the NU87 BLE SMP relay.
+After a test boot, OLED and alarm-clear ACKs and microphone START/STOP succeeded.
+Only then was the exact image explicitly confirmed. A further software reset
+preserved active, confirmed version `0.2.2` and repeated those checks successfully.
+The MCUboot image hash is
+`9f46926b733401b928594d3b41eec0938f35078378cf80af77864a73e1024568`.
+An earlier unconfirmed `0.2.1` test reverted to `0.2.0` on software reset.
+
+Each audio check received three silent armed frames with no detected sequence
+loss. This verifies transport, not BTN2/BTN3 recording, acoustic capture or speech
+recognition. The audible BTN4 alarm and power loss during OTA remain untested
+for this upgrade. Intermittent BLE timeout `0x08` remains recorded; this is not
+a claim of continuous wireless stability.
+
+The [latest GIF, MP4 and evidence](https://github.com/mzsz94/micro-wallaby/blob/feat/military-wallaby-oled-graphics/docs/demo/OLED-GRAPHICS.md)
+show a 24.92-second actual browser check after the confirmed reset: real IMU
+input, face/horizon/text ACKs, virtual patrol, W-key driving and Space stopping.
+The IMU stayed on the desk, and the OLED preview is host-rendered.
